@@ -7,8 +7,7 @@ import logging
 from datetime import datetime
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from dataloader.MaldiMaranon_Manager import MaldiMaranonManager
-from dataloader.MaldiDataset import MaldiDataset
+from dataloader.MARISMa_Manager import MARISMaManager, MARISMa
 from utils.preprocess import SequentialPreprocessor, VarStabilizer, Smoother, BaselineCorrecter, Trimmer, Binner, StdThresholder, LogScaler, MinMaxScaler
 
 # Set up logging
@@ -55,7 +54,7 @@ for i, step in enumerate(preprocess_pipeline.preprocessors, 1):
 
 # Initialize the MALDIManager
 pickle_path = os.path.join(os.path.dirname(__file__), 'MARISMa_anonymized.pkl')
-manager = MaldiMaranonManager(dataset_path, presaved=True, pickel_path=pickle_path)
+manager = MARISMaManager(dataset_path, presaved=True, pickel_path=pickle_path)
 
 genus_species_list = [
     ("Klebsiella", "Pneumoniae"),
@@ -94,8 +93,8 @@ enterobacter_data = manager.query_spectra_dict(genus_species=enterobacter_specie
 
 # Create datasets for both main species and Enterobacter species
 logger.info("Creating datasets...")
-species_dataset = MaldiDataset(species, preprocess_pipeline=preprocess_pipeline)
-enterobacter_dataset = MaldiDataset(enterobacter_data, preprocess_pipeline=preprocess_pipeline)
+species_dataset = MARISMa(species, preprocess_pipeline=preprocess_pipeline)
+enterobacter_dataset = MARISMa(enterobacter_data, preprocess_pipeline=preprocess_pipeline)
 
 # Initialize arrays
 spectra = []
