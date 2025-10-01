@@ -62,8 +62,7 @@ def generate_spectrum(array, len):
 def reshape_spectrum(mz, i):
     return mz.reshape(1, -1), i.reshape(1, -1)
 
-# THIS TO REVISE
-def calculate_PIKE(reconstructed, true, target, t=8):
+def calculate_PIKEtoMean(reconstructed, true, target, t=8):
     """
     Computes normalized PIKE reconstruction error between a generated spectrum and the mean spectrum of each label.
     Args:
@@ -97,7 +96,7 @@ def calculate_PIKE(reconstructed, true, target, t=8):
         norm_pike_dict[label] = K_norm[0][0]
     return norm_pike_dict
 
-def pike_reconstruction_error(x, x_hat, t=8):
+def calculate_PIKE(x, x_hat, t=8):
     """
     Computes the normalized PIKE error between a true spectrum and its reconstruction.
     Args:
