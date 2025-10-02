@@ -4,7 +4,8 @@ import torch
 import time
 import numpy as np
 
-from losses.PIKE import calculate_PIKE, calculate_PIKEtoMean
+# from losses.PIKE import calculate_PIKE, calculate_PIKEtoMean
+from losses.PIKE_GPU import calculate_PIKE_gpu
 
 def reconerrorPIKE(model, data_loader, logger=None, labels=None):
     """
@@ -41,7 +42,9 @@ def reconerrorPIKE(model, data_loader, logger=None, labels=None):
                 batch_labels = labels[sample_idx:sample_idx+batch_size]
             # Compute PIKE error for each sample in batch
             for i in range(batch_size):
-                pike_err = calculate_PIKE(x_true[i], x_hat[i])
+                x_true_tensor = torch.tensor(x_true[i], device=device)
+                x_hat_tensor = torch.tensor(x_hat[i], device=device)
+                pike_err = calculate_PIKE_gpu(x_true_tensor, x_hat_tensor)
                 pike_errors.append(pike_err)
                 if labels is not None:
                     pike_by_class[batch_labels[i]].append(pike_err)

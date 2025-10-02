@@ -18,7 +18,10 @@ def plot_latent_tsne(model, data, label, results_path, set, perplexity=30, rando
 	"""
 	model.eval()
 	with torch.no_grad():
-		X = torch.tensor(data, dtype=torch.float32)
+		if torch.is_tensor(data):
+			X = data.detach().clone()
+		else:
+			X = torch.tensor(data, dtype=torch.float32)
 		mu_e, log_var_e = model.encoder.encode(X)
 		latent_means = mu_e.cpu().numpy()  # shape: (N_samples, latent_dim)
 
@@ -26,6 +29,8 @@ def plot_latent_tsne(model, data, label, results_path, set, perplexity=30, rando
 	latent_2d = TSNE(n_components=2, perplexity=perplexity, random_state=random_state).fit_transform(latent_means)
 
 	# 3. Convert string labels to integer codes
+	if torch.is_tensor(label):
+		label = label.cpu().numpy()
 	unique_labels, label_numeric = np.unique(label, return_inverse=True)
 
 	# 4. Plot, colored by label
@@ -86,15 +91,16 @@ def plot_reconstructions(model, data, n_samples, results_path, pike_fn, random_s
 		random_state: Random seed for reproducibility.
 	"""
 	labels = data.labels
-	data = data.data
+	spectra = data.data
 	np.random.seed(random_state)
-	idxs = np.random.choice(len(data), n_samples, replace=False)
+	idxs = np.random.choice(len(spectra), n_samples, replace=False)
 	sample_labels = np.array([labels[idx] for idx in idxs])
 	unique_labels = np.unique(labels)
 	label_to_color = {lbl: plt.cm.Spectral(i / max(len(unique_labels)-1,1)) for i, lbl in enumerate(unique_labels)}
 	model.eval()
 	with torch.no_grad():
-		X = torch.tensor(data[idxs], dtype=torch.float32)
+		device = next(model.parameters()).device
+		X = spectra[idxs].to(device)
 		mu_e, log_var_e = model.encoder.encode(X)
 		z = mu_e
 		x_hat = model.decoder(z).cpu().numpy()

@@ -49,11 +49,7 @@ def setup_train(config, logger):
 
 def run_experiment(model, train_loader, val_loader, test_loader, config, results_path, logger):
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    device = 'cpu'
-    model.to(device)
-    logger.info(f"Using device: {device}")
-
+    device = next(model.parameters()).device
     # TRAINING
     logger.info("=" * 80)
     logger.info(f"TRAINING...:")
@@ -101,14 +97,16 @@ def run_experiment(model, train_loader, val_loader, test_loader, config, results
     test_loss = evaluation(test_loader, best_model)
     logger.info(f"Test ELBO loss: {test_loss:.2f}")
 
-    return best_model, [nll_train, nll_val], val_loss, test_loss, metadata, device
+    return best_model, [nll_train, nll_val], val_loss, test_loss, metadata
 
 def evaluation(test_loader, model_best):
     # EVALUATION
     model_best.eval()
+    device = next(model_best.parameters()).device
     loss = 0.
     N = 0.
     for _, test_batch in enumerate(test_loader):
+        test_batch = test_batch.to(device)
         loss_t = model_best.forward(test_batch)
         loss = loss + loss_t.item()
         N = N + test_batch.shape[0]
@@ -120,14 +118,16 @@ def training(max_patience, num_epochs, model, optimizer, training_loader, val_lo
     nll_train = []
     best_nll = 1000
     patience = 0
-
+    start_epoch = 0
+    device = next(model.parameters()).device
+    
     # Main loop
-    for e in range(num_epochs):
+
+    for e in range(start_epoch, num_epochs):
         # TRAINING
         model.train()
         train_loss = 0.
         N_train = 0
-        device = next(model.parameters()).device
         for _, batch in enumerate(training_loader):
             batch = batch.to(device)
             loss = model.forward(batch)
@@ -147,7 +147,7 @@ def training(max_patience, num_epochs, model, optimizer, training_loader, val_lo
         loss_val = evaluation(val_loader, model_best=model)
         nll_val.append(loss_val)  # save for plotting
 
-        if e == 0:
+        if e == 0 and start_epoch == 0:
             best_nll = loss_val
             best_model = model
         else:

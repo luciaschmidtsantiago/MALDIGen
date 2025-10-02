@@ -2,7 +2,68 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-def get_condition(y, label2, y_embed_layer, label2_dim):
+import torch
+import torch.nn.functional as F
+
+def get_condition(y_species, y_amr=None, y_embed_layer_species=None, y_embed_layer_amr=None, embedding=True):
+    """
+    Get conditioning vector for conditional VAE.
+
+    Args:
+        y_species (Tensor): Long tensor of shape [batch] with categorical species labels (0 to num_species-1).
+        y_amr (Tensor or None): Optional multi-label or soft-label tensor [batch, num_amr_labels].
+        y_embed_layer_species (nn.Embedding): Embedding layer for species.
+        y_embed_layer_amr (nn.Embedding): Embedding layer for AMR labels (multi-label).
+        embedding (bool): If True, use embedding representations. If False, return one-hot.
+
+    Returns:
+        cond (Tensor): Conditioning vector [batch, cond_dim]
+    """
+
+    if embedding:
+        # Embed species (always categorical)
+        y_species_emb = y_embed_layer_species(y_species)  # [batch, embed_dim_species]
+
+        if y_amr is not None:
+            all_amr_embeds = y_embed_layer_amr.weight  # [num_amr, embed_dim]
+            batch_embeds = []
+
+            for i in range(y_amr.size(0)):
+                y_sample = y_amr[i]
+                if torch.any((y_sample > 0) & (y_sample < 1)):
+                    weighted_embeds = y_sample.unsqueeze(1) * all_amr_embeds
+                    prob_sum = y_sample.sum()
+                    if prob_sum > 0:
+                        amr_emb = weighted_embeds.sum(dim=0) / prob_sum
+                    else:
+                        amr_emb = torch.zeros(y_embed_layer_amr.embedding_dim, device=y_sample.device)
+                else:
+                    idxs = (y_sample == 1).nonzero(as_tuple=True)[0]
+                    if len(idxs) == 0:
+                        amr_emb = torch.zeros(y_embed_layer_amr.embedding_dim, device=y_sample.device)
+                    else:
+                        amr_emb = y_embed_layer_amr(idxs).mean(dim=0)
+                batch_embeds.append(amr_emb)
+
+            y_amr_emb = torch.stack(batch_embeds, dim=0)  # [batch, embed_dim_amr]
+            cond = torch.cat([y_species_emb, y_amr_emb], dim=1)
+        else:
+            cond = y_species_emb
+
+    # One-hot encoding without embedding
+    else:
+        # y_species is categorical multi-class
+        y_species_onehot = F.one_hot(y_species, num_classes=y_embed_layer_species.num_embeddings).float()
+        if y_amr is not None:
+            # y_amr is expected to be multi-label binary or soft labels
+            cond = torch.cat([y_species_onehot, y_amr], dim=1)
+        else:
+            cond = y_species_onehot
+
+    return cond
+
+#### OLD VERSION OF GET CONDITION ####
+def get_condition_old(y, label2, y_embed_layer, label2_dim):
     """
     Método común para generar condiciones a partir de etiquetas multilabel y categóricas.
     Ahora soporta tanto etiquetas binarias (0/1) como probabilidades soft [0,1].
