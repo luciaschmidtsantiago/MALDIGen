@@ -44,7 +44,7 @@ def load_data(pickle_marisma, pickle_driams, logger: logging.Logger):
     with open(pickle_marisma, "rb") as f:
         data_marisma = pickle.load(f)
     spectra_m, labels_m, metas_m = data_marisma['data'], data_marisma['label'], data_marisma['meta']
-    years = np.array([m['year'] for m in metas_m])
+    years = np.array([int(m['year']) for m in metas_m])
 
     train_idx = np.where((years >= 2019) & (years <= 2023))[0]
     val_idx   = np.where(years == 2018)[0]
