@@ -4,23 +4,27 @@ import torch.nn.functional as F
 
 # Simple MLP encoder/decoder for 1D spectra (no conditioning)
 class MLPEncoder1D(nn.Module):
-    def __init__(self, D, num_layers, hidden_dim, latent_dim):
-        """
-        D: input dimension
-        num_layers: number of hidden layers (>=2 recommended)
-        hidden_dim: base hidden layer size (final bottleneck)
-        latent_dim: latent space dimension
-        """
+    def __init__(self, D, num_layers, latent_dim):
         super().__init__()
         layers = []
+
+        # Start from last hidden layer: 4 * latent_dim
+        current = 4 * latent_dim
+        hidden_dims = [current]
+
+        # Prepend layers: each one is 2 * next
+        for _ in range(num_layers - 1):
+            current = 2 * current
+            hidden_dims.insert(0, current)
+
+        # Build layers
         in_dim = D
-        # Compute multipliers: e.g. for 5 layers: [8, 4, 2, 1]
-        multipliers = [2 ** (num_layers - i - 1) for i in range(num_layers)]
-        for m in multipliers:
-            out_dim = m * hidden_dim
+        for out_dim in hidden_dims:
             layers.append(nn.Linear(in_dim, out_dim))
             layers.append(nn.LeakyReLU())
             in_dim = out_dim
+
+        # Final layer: outputs [μ, logσ²]
         layers.append(nn.Linear(in_dim, 2 * latent_dim))
         self.net = nn.Sequential(*layers)
 
@@ -28,95 +32,154 @@ class MLPEncoder1D(nn.Module):
         return self.net(x)
 
 class MLPDecoder1D(nn.Module):
-    def __init__(self, latent_dim, num_layers, hidden_dim, D):
-        """
-        latent_dim: latent space dimension
-        num_layers: number of hidden layers (>=2 recommended)
-        hidden_dim: base hidden layer size (initial bottleneck)
-        D: output dimension
-        """
+    def __init__(self, latent_dim, num_layers, D):
         super().__init__()
         layers = []
+
+        # Start from 4 * latent_dim
+        current = 4 * latent_dim
+        hidden_dims = [current]
+
+        # Append layers: each one is 2 * previous
+        for _ in range(num_layers - 1):
+            current = 2 * current
+            hidden_dims.append(current)
+
+        # Build layers
         in_dim = latent_dim
-        # Compute multipliers: e.g. for 5 layers: [1, 2, 4, 8]
-        multipliers = [2 ** i for i in range(num_layers)]
-        for m in multipliers:
-            out_dim = m * hidden_dim
+        for out_dim in hidden_dims:
             layers.append(nn.Linear(in_dim, out_dim))
             layers.append(nn.LeakyReLU())
             in_dim = out_dim
+
+        # Final layer: output dimension
         layers.append(nn.Linear(in_dim, D))
         self.net = nn.Sequential(*layers)
 
     def forward(self, z):
         return self.net(z)
     
+
 class CNNEncoder1D(nn.Module):
-    def __init__(self, latent_dim, img_shape, enc_hidden2, num_layers=5, base_channels=32, max_pool=False):
+    def __init__(self, latent_dim, img_shape, num_layers=3, base_channels=32, max_pool=False):
         super().__init__()
         self.img_shape = img_shape
         self.num_layers = num_layers
         self.base_channels = base_channels
         self.max_pool = max_pool
+
         conv_layers = []
         in_channels = 1
         out_channels = base_channels
         length = img_shape[1]
+
         for i in range(num_layers):
             conv_layers.append(nn.Conv1d(in_channels, out_channels, 4, stride=2, padding=1))
             conv_layers.append(nn.LeakyReLU())
             in_channels = out_channels
             out_channels *= 2
-            length = (length + 2*1 - 4)//2 + 1
-            if self.max_pool and (i+1) % 2 == 0 and i != num_layers-1:
+            length = (length + 2 * 1 - 4) // 2 + 1
+
+            if self.max_pool and (i + 1) % 2 == 0 and i != num_layers - 1:
                 conv_layers.append(nn.MaxPool1d(2, stride=2))
-                length = (length - 2)//2 + 1
+                length = (length - 2) // 2 + 1
+
         conv_layers.append(nn.Flatten())
         self.conv = nn.Sequential(*conv_layers)
-        conv_out_dim = length * (in_channels)
-        self.fc = nn.Sequential(
-            nn.Linear(conv_out_dim, enc_hidden2), nn.LeakyReLU(),
-            nn.Linear(enc_hidden2, 2 * latent_dim)
-        )
+
+        conv_out_dim = length * in_channels
+
+        # Recursively decreasing FC layers ending in 4*latent_dim → 2*latent_dim
+        fc_hidden = [4 * latent_dim * (2 ** i) for i in reversed(range(num_layers))]
+        fc_layers = []
+        in_dim = conv_out_dim
+        for out_dim in fc_hidden:
+            fc_layers.append(nn.Linear(in_dim, out_dim))
+            fc_layers.append(nn.LeakyReLU())
+            in_dim = out_dim
+
+        fc_layers.append(nn.Linear(in_dim, 2 * latent_dim))  # final layer
+        self.fc = nn.Sequential(*fc_layers)
+
     def forward(self, x):
         x = x.view(-1, 1, self.img_shape[1])
         h = self.conv(x)
         return self.fc(h)
     
 class CNNDecoder1D(nn.Module):
-    def __init__(self, latent_dim, img_shape, dec_hidden2, num_layers=5, base_channels=32, max_pool=False):
+    def __init__(self, latent_dim, img_shape, num_layers=3, base_channels=32, max_pool=False):
         super().__init__()
         self.img_shape = img_shape
         self.D = img_shape[1]
         self.num_layers = num_layers
         self.base_channels = base_channels
         self.max_pool = max_pool
-        # Dynamically compute output shape to match encoder
+
+        # Output shape after CNN encoder
         length = img_shape[1]
         channels = base_channels
         for i in range(num_layers):
-            length = (length + 2*1 - 4)//2 + 1
+            length = (length + 2 * 1 - 4) // 2 + 1
             channels *= 2
-            if max_pool and (i+1) % 2 == 0 and i != num_layers-1:
-                length = (length - 2)//2 + 1
+            if max_pool and (i + 1) % 2 == 0 and i != num_layers - 1:
+                length = (length - 2) // 2 + 1
         channels = channels // 2
-        self.fc = nn.Sequential(
-            nn.Linear(latent_dim, dec_hidden2), nn.LeakyReLU(),
-            nn.Linear(dec_hidden2, length * channels), nn.LeakyReLU()
-        )
-        # Build deconv layers (no MaxUnpool1d)
+
+        # Reverse of encoder FC layers: latent_dim → ... → 4*latent_dim
+        fc_hidden = [4 * latent_dim * (2 ** i) for i in range(num_layers)]
+        fc_layers = []
+        in_dim = latent_dim
+        for out_dim in fc_hidden:
+            fc_layers.append(nn.Linear(in_dim, out_dim))
+            fc_layers.append(nn.LeakyReLU())
+            in_dim = out_dim
+
+        fc_layers.append(nn.Linear(in_dim, length * channels))
+        fc_layers.append(nn.LeakyReLU())
+        self.fc = nn.Sequential(*fc_layers)
+
+        # Deconvolution
         deconv_layers = []
         in_channels = channels
         out_channels = in_channels // 2
-        for i in range(num_layers-1):
-            deconv_layers.append(nn.ConvTranspose1d(in_channels, out_channels, 4, stride=2, padding=1, output_padding=0))
+        for i in range(num_layers - 1):
+            deconv_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
+            deconv_layers.append(nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1))
             deconv_layers.append(nn.LeakyReLU())
             in_channels = out_channels
             out_channels = in_channels // 2
-            # Remove MaxUnpool1d, not needed
-        # Final layer to 1 channel
-        deconv_layers.append(nn.ConvTranspose1d(in_channels, 1, 4, stride=2, padding=1, output_padding=1))
+
+        deconv_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
+        deconv_layers.append(nn.Conv1d(in_channels, 1, kernel_size=3, padding=1))
         self.deconv = nn.Sequential(*deconv_layers)
+
+    def forward(self, z):
+        # Match encoder dimensions
+        length = self.img_shape[1]
+        channels = self.base_channels
+        for i in range(self.num_layers):
+            length = (length + 2 * 1 - 4) // 2 + 1
+            channels *= 2
+            if self.max_pool and (i + 1) % 2 == 0 and i != self.num_layers - 1:
+                length = (length - 2) // 2 + 1
+        channels = channels // 2
+
+        h = self.fc(z)
+        h = h.view(-1, channels, length)
+        x_rec = self.deconv(h)
+
+        if x_rec.dim() == 2:
+            x_rec = x_rec.unsqueeze(1)
+        out_len = x_rec.shape[2]
+        target_len = self.img_shape[1]
+        if out_len > target_len:
+            x_rec = x_rec[:, :, :target_len]
+        elif out_len < target_len:
+            pad_amt = target_len - out_len
+            x_rec = torch.nn.functional.pad(x_rec, (0, pad_amt))
+
+        return x_rec.view(x_rec.size(0), -1)
+
     def forward(self, z):
         # Dynamically compute output shape to match encoder
         length = self.img_shape[1]
@@ -142,7 +205,8 @@ class CNNDecoder1D(nn.Module):
             x_rec = torch.nn.functional.pad(x_rec, (0, pad_amt))
         x_rec = x_rec.view(x_rec.size(0), -1)
         return x_rec  # Garantiza salida [batch, D]
-    
+
+
 # --- Transformer blocks for 1D tokens ---
 class TransformerBlock(nn.Module):
     def __init__(self, d_model, n_heads, d_ff=256, dropout=0.1):
@@ -168,76 +232,71 @@ class TransformerBlock(nn.Module):
 
 # --- CNN + Attention Encoder ---
 class CNNAttenEncoder(nn.Module):
-    def __init__(self, D=6000, latent_dim=128, n_heads=4, n_layers=4, token_dim=128, n_tokens=300):
+    def __init__(self, D, latent_dim, n_heads, n_layers, n_tokens=300):
         super().__init__()
-        # Conv stem (local features)
+        token_dim = 4 * latent_dim  # matches new standard
+
         self.conv = nn.Sequential(
-            nn.Conv1d(1, 64, kernel_size=7, stride=2, padding=3),  # (B,64,3000)
+            nn.Conv1d(1, 64, kernel_size=7, stride=2, padding=3),
             nn.GELU(),
-            nn.Conv1d(64, 128, kernel_size=10, stride=10),          # (B,128,300)
+            nn.Conv1d(64, 128, kernel_size=10, stride=10),
             nn.GELU(),
         )
-        self.pos_emb = nn.Parameter(torch.randn(1, n_tokens, token_dim))
 
-        # Project channels to token_dim
+        self.pos_emb = nn.Parameter(torch.randn(1, n_tokens, token_dim))
         self.proj = nn.Linear(128, token_dim)
 
-        # Transformer blocks
         self.transformer = nn.Sequential(*[
             TransformerBlock(d_model=token_dim, n_heads=n_heads) for _ in range(n_layers)
         ])
 
-        # Latent heads: output 2*latent_dim for VAE
         self.fc_out = nn.Linear(token_dim, 2 * latent_dim)
 
     def forward(self, x):
-        # x: (B, D) → reshape to 1D "image"
-        x = x.unsqueeze(1)  # (B,1,6000)
-        x = self.conv(x)    # (B,128,300)
-        x = x.permute(0, 2, 1)  # (B,300,128)
-        x = self.proj(x) + self.pos_emb  # (B,300,token_dim)
-
-        x = self.transformer(x)  # (B,300,token_dim)
-        x = x.mean(dim=1)        # pool tokens (B,token_dim)
-        # Output [batch, 2*latent_dim] for VAE
+        x = x.unsqueeze(1)
+        x = self.conv(x)
+        x = x.permute(0, 2, 1)
+        x = self.proj(x) + self.pos_emb[:, :x.size(1)]
+        x = self.transformer(x)
+        x = x.mean(dim=1)
         return self.fc_out(x)
 
 # --- CNN + Attention Decoder ---
 class CNNAttenDecoder(nn.Module):
-    def __init__(self, D=6000, latent_dim=128, n_heads=4, n_layers=4, token_dim=128, n_tokens=300):
+    def __init__(self, D, latent_dim, n_heads, n_layers, n_tokens=300):
         super().__init__()
         self.n_tokens = n_tokens
+        token_dim = 4 * latent_dim
         self.token_dim = token_dim
 
-        # Map latent → tokens
-        self.fc = nn.Linear(latent_dim, n_tokens * token_dim)
+        self.fc = nn.Sequential(
+            nn.Linear(latent_dim, 2 * latent_dim),
+            nn.LeakyReLU(),
+            nn.Linear(2 * latent_dim, token_dim * n_tokens)
+        )
 
-        # Transformer stack
         self.transformer = nn.Sequential(*[
             TransformerBlock(d_model=token_dim, n_heads=n_heads) for _ in range(n_layers)
         ])
 
-        # Project back to feature maps
         self.to_feat = nn.Linear(token_dim, 128)
 
-        # ConvTranspose pipeline (de-patching)
         self.deconv = nn.Sequential(
-            nn.ConvTranspose1d(128, 64, kernel_size=10, stride=10),   # (B,64,3000)
+            nn.ConvTranspose1d(128, 64, kernel_size=10, stride=10),
             nn.GELU(),
-            nn.ConvTranspose1d(64, 32, kernel_size=2, stride=2),      # (B,32,6000)
+            nn.ConvTranspose1d(64, 32, kernel_size=2, stride=2),
             nn.GELU(),
             nn.Conv1d(32, 1, kernel_size=7, padding=3),
-            nn.Sigmoid(),  # final output in [0,1]
+            nn.Sigmoid(),
         )
 
     def forward(self, z):
-        # z: (B, latent_dim)
-        x = self.fc(z).view(-1, self.n_tokens, self.token_dim)  # (B,300,token_dim)
-        x = self.transformer(x)  # (B,300,token_dim)
-        x = self.to_feat(x)      # (B,300,128)
-        x = x.permute(0, 2, 1)   # (B,128,300)
-        x = self.deconv(x)       # (B,1,6000)
-        return x.squeeze(1)      # (B,6000)
+        x = self.fc(z).view(-1, self.n_tokens, self.token_dim)
+        x = self.transformer(x)
+        x = self.to_feat(x)
+        x = x.permute(0, 2, 1)
+        x = self.deconv(x)
+        return x.squeeze(1)
     
 ############# CONDITIONING #############
 
