@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 
-def plot_latent_tsne(model, data, label, results_path, perplexity=30, random_state=42):
+def plot_latent_tsne(model, data, label, results_path, set, perplexity=30, random_state=42):
 	"""
 	Projects the latent space of a VAE model using t-SNE and colors by species label.
 
@@ -28,10 +28,6 @@ def plot_latent_tsne(model, data, label, results_path, perplexity=30, random_sta
 	# 3. Convert string labels to integer codes
 	unique_labels, label_numeric = np.unique(label, return_inverse=True)
 
-	# Print equivalences
-	for idx, label in enumerate(unique_labels):
-		print(f"{idx}: {label}")
-
 	# 4. Plot, colored by label
 	plt.figure(figsize=(10, 6))
 	scatter = plt.scatter(latent_2d[:, 0], latent_2d[:, 1],
@@ -45,7 +41,7 @@ def plot_latent_tsne(model, data, label, results_path, perplexity=30, random_sta
 	plt.tight_layout()
 	plot_dir = os.path.join(results_path, 'plots')
 	os.makedirs(plot_dir, exist_ok=True)
-	plot_path = os.path.join(plot_dir, 'latent_tsne.png')
+	plot_path = os.path.join(plot_dir, f'latent_tsne_{set}.png')
 	plt.savefig(plot_path)
 	plt.close()
 	print(f"Latent t-SNE plot saved to: {plot_path}")
@@ -111,11 +107,12 @@ def plot_reconstructions(model, data, n_samples, results_path, pike_fn, random_s
 		color = label_to_color[label] if label_to_color is not None else 'blue'
 		axes[i, 0].plot(orig, color=color)
 		axes[i, 0].set_title(f"Original (idx={idx})\nLabel: {label}")
+		axes[i, 0].set_xlabel('m/z index')
+		axes[i, 0].set_ylabel('Intensity')
 		axes[i, 1].plot(recon, color=color)
 		axes[i, 1].set_title(f"Reconstruction\nLabel: {label}\nPIKE={pike_err:.4f}")
-		for ax in axes[i]:
-			ax.set_xticks([])
-			ax.set_yticks([])
+		axes[i, 1].set_xlabel('m/z index')
+		axes[i, 1].set_ylabel('Intensity')
 	plt.tight_layout()
 	plot_dir = os.path.join(results_path, 'plots')
 	os.makedirs(plot_dir, exist_ok=True)

@@ -1,6 +1,7 @@
 import os
 import csv
 import torch
+import time
 import numpy as np
 
 from losses.PIKE import calculate_PIKE, calculate_PIKEtoMean
@@ -61,25 +62,96 @@ def reconerrorPIKE(model, data_loader, logger=None, labels=None):
                 logger.info(f"Class {cls}: mean PIKE RE = {avg_pike:.4f} (n={len(pike_by_class[cls])})")
     return mean_pike, pike_errors, class_pike
 
-def write_pike_csv(model_path, class_pike_dict, total_pike, csv_path, label_order=None):
+def write_pike_csv(name, class_pike_dict, total_pike, config, label_order=None):
     """
     Write PIKE per-class and total PIKE for a model to a CSV file, appending if exists.
     Args:
-        model_path: Path to the model file.
+        name: Name to identify the model/run.
         class_pike_dict: Dict mapping class label to PIKE value.
         total_pike: Overall mean PIKE value.
-        csv_path: Path to CSV file to write/append.
+        config: Config dict (must contain 'results_dir').
         label_order: Optional list of labels to fix column order.
     """
     # Prepare header and row
     if label_order is None:
         label_order = sorted(class_pike_dict.keys())
     header = ['model'] + [f'PIKE_{lbl}' for lbl in label_order] + ['PIKE_total']
-    row = [model_path] + [class_pike_dict.get(lbl, '') for lbl in label_order] + [total_pike]
+    row = [name] + [class_pike_dict.get(lbl, '') for lbl in label_order] + [total_pike]
     # Write or append
+    csv_path = os.path.join(config['results_dir'], 'pike_results.csv')
     write_header = not os.path.exists(csv_path)
     with open(csv_path, 'a', newline='') as f:
         writer = csv.writer(f)
         if write_header:
             writer.writerow(header)
         writer.writerow(row)
+
+def compute_val_time_metrics(model, val, config):
+    """
+    Compute average reconstruction time and average generation time per spectrum.
+
+    Returns:
+        avg_recon_time: float (seconds per sample)
+        avg_gen_time: float (seconds per sample)
+    """
+    device = next(model.parameters()).device
+    val_data = val.data
+    batch_size = config.get('batch_size', 64)
+
+    avg_recon_time = None
+    avg_gen_time = None
+
+    # --- Average reconstruction time ---
+    if val_data is not None:
+        X = torch.tensor(val_data, dtype=torch.float32).to(device)
+        model.eval()
+        with torch.no_grad():
+            start = time.time()
+            if hasattr(model.encoder, "encode"):
+                mu, _ = model.encoder.encode(X)
+            else:
+                mu = model.encoder(X)
+                mu = mu[:, :mu.size(1) // 2]  # assume [mu, logvar] if not split
+            x_hat = model.decoder(mu)
+            torch.cuda.synchronize() if device.type == 'cuda' else None
+            end = time.time()
+        avg_recon_time = (end - start) / len(val_data)
+
+    # --- Infer latent_dim from model ---
+    latent_dim = getattr(model, "latent_dim", None)
+    if latent_dim is None and hasattr(model.encoder, "fc"):
+        fc_layers = model.encoder.fc
+        for layer in reversed(fc_layers):
+            if isinstance(layer, torch.nn.Linear):
+                latent_dim = layer.out_features // 2  # assume [mu, logvar]
+                break
+    if latent_dim is None:
+        latent_dim = config.get("latent_dim", 16)
+
+    # --- Average generation time ---
+    with torch.no_grad():
+        z = torch.randn(batch_size, latent_dim).to(device)
+        start = time.time()
+        x_gen = model.decoder(z)
+        torch.cuda.synchronize() if device.type == 'cuda' else None
+        end = time.time()
+        avg_gen_time = (end - start) / batch_size
+
+    return avg_recon_time, avg_gen_time
+
+def write_metadata_csv(metadata, config, name):
+    """
+    Append metadata to a summary CSV. The first column is the yaml filename, then metadata values.
+    Args:
+        metadata: dict of metrics/values
+        config: config dict (must contain 'results_dir')
+        name: name to the yaml file
+    """
+    csv_summary_path = os.path.join(config['results_dir'], 'summary_experiments.csv')
+    file_exists = os.path.exists(csv_summary_path)
+    with open(csv_summary_path, 'a', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        if not file_exists:
+            # Write header
+            writer.writerow(['yaml_file'] + list(metadata.keys()))
+        writer.writerow([name] + [metadata[k] for k in metadata.keys()])
