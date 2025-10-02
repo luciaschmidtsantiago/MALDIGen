@@ -10,6 +10,7 @@ from utils.conditional_utils import get_condition, impute_missing_labels, comput
 PI = torch.from_numpy(np.asarray(np.pi))
 EPS = 1e-8
 
+############### VAE with Bernoulli decoder ###############
 class Encoder(nn.Module):
     def __init__(self, encoder_net):
         super(Encoder, self).__init__()
@@ -23,12 +24,14 @@ class Encoder(nn.Module):
         # where epsilon ~ N(0, I)
         std = torch.exp(0.5 * log_var)        # Convert log variance to standard deviation
         eps = torch.randn_like(std)           # Sample epsilon with the same shape as std (L=1)
-        return mu + std * eps                 # Sample z
+        z = mu + std * eps                     # Sample z
+        return z                # Sample z
 
     def encode(self, x):
         # Forward input x through the encoder network to get mu and log_var
         h_e = self.encoder(x)                 # Output is of size 2M
         mu_e, log_var_e = torch.chunk(h_e, 2, dim=1)  # Split into two parts: mean and log variance
+        log_var_e = torch.clamp(log_var_e, min=-6.0, max=6.0) # Clamp log_var for numerical stability
         return mu_e, log_var_e
 
     def sample(self, x=None, mu_e=None, log_var_e=None):
@@ -61,11 +64,12 @@ class BernoulliDecoder(nn.Module):
 
     def log_prob(self, x, z):
         theta = self.decode(z)  # Use sigmoid output
-        print(f"x min: {x.min()}, x max: {x.max()}")
-        # BCE
         # Check x values are between 0 and 1
-        if torch.any(x < 0) or torch.any(x > 1):
+        if torch.any(theta < 0) or torch.any(theta > 1) or torch.isnan(theta).any():
+            raise ValueError(f"[ERROR] theta (decoder output) out of bounds: min={theta.min()}, max={theta.max()}")
+        if torch.any(x < 0) or torch.any(x > 1) or torch.isnan(x).any():
             raise ValueError('Input x must be in the range [0, 1] for Bernoulli log_prob computation.')
+        # BCE
         log_prob = -F.binary_cross_entropy(theta, x, reduction='none').sum(dim=1)
         return log_prob
     
@@ -100,50 +104,55 @@ class VAE_Bernoulli(nn.Module):
         return self.decoder.sample(z)
     
 
-
+################ Conditional VAE ###############
 class ConditionalEncoder(nn.Module):
-    def __init__(self, encoder_net, y_dim, y_embed_dim, label2_dim):
+    def __init__(self, encoder_net, y_species_dim, y_embed_dim, y_amr_dim):
         super().__init__()
         self.encoder = encoder_net
-        self.y_embed = nn.Embedding(y_dim, y_embed_dim)
-        self.label2_dim = label2_dim
-    
-    def forward(self, x, cond):
+        self.y_embed = nn.Embedding(y_species_dim, y_embed_dim)
+        self.y_amr_dim = y_amr_dim
+
+    def get_cond(self, y_species, y_amr):
+        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim, embedding=True)
+
+    def forward(self, x, y_species, y_amr=None):
+        cond = self.get_cond(y_species, y_amr)
         h_e = self.encoder(x, cond)
         mu_e, log_var_e = torch.chunk(h_e, 2, dim=1)
         return mu_e, log_var_e
-    
-    def sample(self, x=None, cond=None, mu_e=None, log_var_e=None):
+
+    def sample(self, x=None, y_species=None, y_amr=None, mu_e=None, log_var_e=None):
         if (mu_e is None) or (log_var_e is None):
-            mu_e, log_var_e = self.forward(x, cond)
+            mu_e, log_var_e = self.forward(x, y_species, y_amr)
         std = torch.exp(0.5 * log_var_e)
         eps = torch.randn_like(std)
         return mu_e + std * eps
 
 class ConditionalDecoder(nn.Module):
-    def __init__(self, decoder_net, y_dim, y_embed_dim, label2_dim, likelihood='bernoulli', fixed_var=1.0):
+    def __init__(self, decoder_net, y_species_dim, y_embed_dim, y_amr_dim, likelihood='bernoulli', fixed_var=1.0):
         super().__init__()
         self.decoder = decoder_net
-        self.y_embed = nn.Embedding(y_dim, y_embed_dim)
-        self.label2_dim = label2_dim
+        self.y_embed = nn.Embedding(y_species_dim, y_embed_dim)
+        self.y_amr_dim = y_amr_dim
         self.likelihood = likelihood
         self.var = fixed_var
-    
-    def get_cond(self, y, label2):
-        """Método wrapper que usa la función común get_condition"""
-        return get_condition(y, label2, self.y_embed, self.label2_dim)
-    
-    def forward(self, z, cond):
+
+    def get_cond(self, y_species, y_amr):
+        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim, embedding=True)
+
+    def forward(self, z, y_species, y_amr=None):
+        cond = self.get_cond(y_species, y_amr)
         out = self.decoder(z, cond)
         if self.likelihood == 'gaussian':
-            mu = out
+            mu =out
             return mu
         else:
             logits = out
             probs = torch.sigmoid(logits)
             return probs
     
-    def sample(self, z, cond):
+    def sample(self, z, y_species, y_amr=None):
+        cond = self.get_cond(y_species, y_amr)
         if self.likelihood == 'gaussian':
             mu = self.forward(z, cond)
             std = torch.sqrt(torch.tensor(self.var)).to(mu.device)
@@ -165,106 +174,123 @@ class ConditionalDecoder(nn.Module):
             return log_prob
 
 class ConditionalPrior(nn.Module):
-    def __init__(self, y_dim, y_embed_dim, label2_dim, latent_dim, prior_hidden1=128, prior_hidden2=64):
+    def __init__(self, y_species_dim, y_embed_dim, y_amr_dim, latent_dim, prior_hidden1=128, prior_hidden2=64):
         super().__init__()
-        self.y_embed = nn.Embedding(y_dim, y_embed_dim)
-        self.label2_dim = label2_dim
+        self.y_embed = nn.Embedding(y_species_dim, y_embed_dim)
+        self.y_amr_dim = y_amr_dim
         self.fc = nn.Sequential(
-            nn.Linear(y_embed_dim + label2_dim, prior_hidden1), nn.LeakyReLU(),
+            nn.Linear(y_embed_dim + y_amr_dim, prior_hidden1), nn.LeakyReLU(),
             nn.Linear(prior_hidden1, prior_hidden2), nn.LeakyReLU(),
             nn.Linear(prior_hidden2, 2 * latent_dim)
         )
-    
-    def forward(self, cond):
+
+    def get_cond(self, y_species, y_amr):
+        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim, embedding=True)
+
+    def forward(self, y_species, y_amr=None):
+        cond = self.get_cond(y_species, y_amr)
         h = self.fc(cond)
         mu_p, log_var_p = torch.chunk(h, 2, dim=1)
         return mu_p, log_var_p
 
 class ConditionalVAE(nn.Module):
-    def __init__(self, encoder, decoder, prior, beta=1.0):
+    def __init__(self, encoder_net, decoder_net,
+                y_species_dim, y_embed_dim, y_amr_dim,
+                latent_dim, likelihood='bernoulli', fixed_var=1.0, beta=1.0):
         super().__init__()
-        self.encoder = encoder
-        self.decoder = decoder
-        self.prior = prior
+        self.encoder = ConditionalEncoder(encoder_net, y_species_dim, y_embed_dim, y_amr_dim)
+        self.decoder = ConditionalDecoder(decoder_net, y_species_dim, y_embed_dim, y_amr_dim, likelihood, fixed_var)
+        self.prior = ConditionalPrior(y_species_dim, y_embed_dim, y_amr_dim, latent_dim)
         self.beta = beta
-    def forward(self, x, y, label2):
-        cond = get_condition(y, label2, self.encoder.y_embed, self.encoder.label2_dim)
-        mu_e, log_var_e = self.encoder(x, cond)
+
+    def forward(self, x, y_species, y_amr=None):
+        mu_e, log_var_e = self.encoder(x, y_species, y_amr)
         z = self.encoder.sample(mu_e=mu_e, log_var_e=log_var_e)
-        RE = self.decoder.log_prob(x, z, cond)
-        mu_p, log_var_p = self.prior(cond)
+        RE = self.decoder.log_prob(x, z, self.decoder.get_cond(y_species, y_amr))
+        mu_p, log_var_p = self.prior(y_species, y_amr)
         KL = -0.5 * torch.sum(1 + (log_var_e - log_var_p) - ((mu_e - mu_p).pow(2) + log_var_e.exp()) / log_var_p.exp(), dim=1)
-        vae_loss = -(RE - self.beta * KL)
-        return vae_loss.mean()
-    def sample(self, y, label2, batch_size=64):
-        cond = get_condition(y, label2, self.encoder.y_embed, self.encoder.label2_dim)
-        mu_p, log_var_p = self.prior(cond)
+        vae_loss = -(RE - self.beta * KL).mean()
+        return vae_loss
+    
+    def sample(self, y_species, y_amr=None):
+        mu_p, log_var_p = self.prior(y_species, y_amr)
         std = torch.exp(0.5 * log_var_p)
         eps = torch.randn_like(std)
         z = mu_p + std * eps
-        return self.decoder.sample(z, cond)
+        return self.decoder.sample(z, y_species, y_amr)
     
 
+
+################ Semi-supervised Conditional VAE ###############
 class SemisupervisedConditionalVAE(ConditionalVAE):
-    def __init__(self, encoder, decoder, prior, attr_predictor, alpha=1.0, beta=1.0, missing_strategy='soft'):
-        # Inicializar ConditionalVAE base
-        super().__init__(encoder, decoder, prior, beta)
-        
-        # Inferir parámetros automáticamente desde los componentes
-        y_dim = encoder.y_embed.num_embeddings
-        y_embed_dim = encoder.y_embed.embedding_dim
-        self.label2_dim = encoder.label2_dim
-        
-        # Añadir componentes específicos para semisupervised
+    def __init__(self, encoder_net, decoder_net,
+                 y_species_dim, y_embed_dim, y_amr_dim,
+                 latent_dim, attr_predictor,
+                 likelihood='bernoulli', fixed_var=1.0,
+                 alpha=1.0, beta=1.0, missing_strategy='soft'):
+
+        super().__init__(encoder_net, decoder_net,
+                         y_species_dim=y_species_dim,
+                         y_embed_dim=y_embed_dim,
+                         y_amr_dim=y_amr_dim,
+                         latent_dim=latent_dim,
+                         likelihood=likelihood,
+                         fixed_var=fixed_var,
+                         beta=beta)
+
         self.attr_predictor = attr_predictor
-        self.y_embed = nn.Embedding(y_dim, y_embed_dim)
-        self.alpha = alpha         # peso para attr_prediction loss
-        
-        # missing_strategy controla cómo manejar missing values para el VAE:
-        # - 'soft': Usar predicciones como probabilidades soft → embedding ponderado
-        # - 'hard': Umbralizar predicciones a 0/1 → embedding tradicional  
-        # - 'ignore': Missing → 0, solo usar observados → más conservador
-        assert missing_strategy in ['soft', 'hard', 'ignore'], f"missing_strategy debe ser 'soft', 'hard' o 'ignore', got {missing_strategy}"
+        self.y_embed = nn.Embedding(y_species_dim, y_embed_dim)  # For AMR prediction
+        self.y_amr_dim = y_amr_dim
+        self.alpha = alpha
+
+        assert missing_strategy in ['soft', 'hard', 'ignore'], \
+            f"missing_strategy debe ser 'soft', 'hard' o 'ignore', got {missing_strategy}"
         self.missing_strategy = missing_strategy
-    
-    def forward(self, x, y, label2):
-        # 1. Imputar missing values según la estrategia configurada
-        y_input = impute_missing_labels(x, y, label2, self.attr_predictor, self.y_embed, self.label2_dim, self.missing_strategy)
-        
-        # 2. El VAE usa directamente las etiquetas procesadas
-        # get_condition automáticamente detecta si son soft o hard labels
-        vae_loss = super().forward(x, y_input, label2)
-        
-        # 3. Pérdida de predicción siempre sobre atributos observados reales
-        attr_pred_loss = compute_attr_prediction_loss(x, y, label2, self.attr_predictor, self.y_embed, self.label2_dim)
-        
-        total_loss = vae_loss + self.alpha * attr_pred_loss
-        return total_loss
-    
-    def sample(self, y, label2, batch_size=64, fill_missing='neutral'):
+
+    def forward(self, x, y_species, y_amr):
+        # 1. Imputar etiquetas AMR faltantes
+        y_amr_input = impute_missing_labels(
+            x, y_amr, y_species,
+            self.attr_predictor, self.y_embed,
+            self.y_amr_dim,
+            self.missing_strategy
+        )
+
+        # 2. VAE loss con etiquetas imputadas
+        vae_loss = super().forward(x, y_species, y_amr_input)
+
+        # 3. Attribute prediction loss solo sobre valores observados reales
+        attr_pred_loss = compute_attr_prediction_loss(
+            x, y_amr, y_species,
+            self.attr_predictor, self.y_embed,
+            self.y_amr_dim
+        )
+
+        return vae_loss + self.alpha * attr_pred_loss
+
+    def sample(self, y_species, y_amr, batch_size=64, fill_missing='neutral'):
         """
-        Generar muestras reutilizando ConditionalVAE.sample después de imputar
-        fill_missing: 'neutral' (missing → 0.5) o 'predictor' (usar attr_predictor)
+        Generar muestras imputando los valores faltantes en y_amr.
+        fill_missing: 'neutral' → 0.5, 'predictor' → usar attr_predictor
         """
-        # Imputar missing values para generación
-        y_filled = y.clone().float()
-        
-        for i in range(y.size(1)):
-            missing_idx = (y[:, i] == -1).nonzero(as_tuple=True)[0]
+        y_amr_filled = y_amr.clone().float()
+
+        for i in range(y_amr.size(1)):
+            missing_idx = (y_amr[:, i] == -1).nonzero(as_tuple=True)[0]
             if len(missing_idx) > 0:
                 if fill_missing == 'predictor':
-                    # Usar predictor (necesita input x dummy para generación)
-                    x_dummy = torch.zeros((len(missing_idx), 9701), device=y.device)  # TODO: hacer dinámico
-                    y_idx = torch.full((len(missing_idx),), i, dtype=torch.long, device=y.device)
+                    x_dummy = torch.zeros((len(missing_idx), 9701), device=y_amr.device)  # TODO: parametrizar input dim
+                    y_species_batch = y_species[missing_idx]
+
+                    y_idx = torch.full((len(missing_idx),), i, dtype=torch.long, device=y_amr.device)
                     y_emb = self.y_embed(y_idx)
-                    label2_missing = label2[missing_idx]
-                    label2_onehot = F.one_hot(label2_missing, num_classes=self.label2_dim).float()
-                    attr_input = torch.cat([x_dummy, y_emb, label2_onehot], dim=1)
+
+                    y_species_onehot = F.one_hot(y_species_batch, num_classes=self.y_embed.num_embeddings).float()
+                    attr_input = torch.cat([x_dummy, y_emb, y_species_onehot], dim=1)
+
                     pred = self.attr_predictor(attr_input)
-                    y_filled[missing_idx, i] = pred.squeeze(-1)
+                    y_amr_filled[missing_idx, i] = pred.squeeze(-1)
                 else:
-                    y_filled[missing_idx, i] = 0.5  # neutral/incierto
-        
-        # Reutilizar el método sample del ConditionalVAE padre
-        return super().sample(y_filled, label2, batch_size)
-    
+                    y_amr_filled[missing_idx, i] = 0.5  # Valor neutral
+
+        return super().sample(y_species, y_amr_filled, batch_size=batch_size)
