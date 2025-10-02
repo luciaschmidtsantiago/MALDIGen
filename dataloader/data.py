@@ -12,8 +12,12 @@ class MALDI(Dataset):
     Each sample is one spectrum, optionally normalized to [0,1].
     """
     def __init__(self, data, labels, normalization=True, get_labels=False):
-        self.data = data
-        self.labels = labels
+        self.data = torch.tensor(data, dtype=torch.float32)
+        # If labels are strings, map to integers
+        if isinstance(labels[0], str):
+            label_map = {label: idx for idx, label in enumerate(np.unique(labels))}
+            labels = np.vectorize(label_map.get)(labels)
+        self.labels = torch.tensor(labels, dtype=torch.long)
         self.normalization = normalization
         self.get_labels = get_labels
 
@@ -21,7 +25,7 @@ class MALDI(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        spectrum = torch.tensor(self.data[idx], dtype=torch.float32)
+        spectrum = self.data[idx]
         if self.normalization:
             min_val, max_val = spectrum.min(), spectrum.max()
             spectrum = (spectrum - min_val) / (max_val - min_val + 1e-8)
