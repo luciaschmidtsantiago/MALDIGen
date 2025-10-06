@@ -1,4 +1,4 @@
-# data/data.py
+# dataloader/data.py
 import numpy as np
 import torch
 import pickle
@@ -35,7 +35,7 @@ class MALDI(Dataset):
         else:
             return spectrum
 
-def load_data(pickle_marisma, pickle_driams, logger: logging.Logger):
+def load_data(pickle_marisma, pickle_driams, logger: logging.Logger, get_labels=False):
     """
     Load MARISMa and DRIAMS pickled datasets, split into
     train/val/test/OOD, and wrap them in MALDI Dataset objects.
@@ -68,10 +68,10 @@ def load_data(pickle_marisma, pickle_driams, logger: logging.Logger):
     labels_train  = np.concatenate([labels_m[train_idx], labels_d[train_idx_d]])
 
     # Create Dataset objects
-    train = MALDI(spectra_train, labels_train)
-    val_m   = MALDI(spectra_m[val_idx], labels_m[val_idx])
-    test_m  = MALDI(spectra_m[test_idx], labels_m[test_idx])
-    ood_d   = MALDI(spectra_d[ood_idx_d], labels_d[ood_idx_d])
+    train = MALDI(spectra_train, labels_train, get_labels=get_labels)
+    val_m   = MALDI(spectra_m[val_idx], labels_m[val_idx], get_labels=get_labels)
+    test_m  = MALDI(spectra_m[test_idx], labels_m[test_idx], get_labels=get_labels)
+    ood_d   = MALDI(spectra_d[ood_idx_d], labels_d[ood_idx_d], get_labels=get_labels)
 
     logger.info("Training with MARISMa (2018-2023) and DRIAMS (A, B)")
     logger.info(f"----Training set size: {len(train)}")
