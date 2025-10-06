@@ -107,14 +107,15 @@ class VAE_Bernoulli(nn.Module):
 
 ################ Conditional VAE ###############
 class ConditionalEncoder(nn.Module):
-    def __init__(self, encoder_net, y_species_dim, y_embed_dim, y_amr_dim):
+    def __init__(self, encoder_net, y_species_dim, y_embed_dim, y_amr_dim, embedding=True):
         super().__init__()
         self.encoder = encoder_net
         self.y_embed = nn.Embedding(y_species_dim, y_embed_dim)
         self.y_amr_dim = y_amr_dim
+        self.embedding = embedding
 
     def get_cond(self, y_species, y_amr):
-        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim)
+        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim, embedding=self.embedding)
 
     def forward(self, x, y_species, y_amr=None):
         cond = self.get_cond(y_species, y_amr)
@@ -130,16 +131,17 @@ class ConditionalEncoder(nn.Module):
         return mu_e + std * eps
 
 class ConditionalDecoder(nn.Module):
-    def __init__(self, decoder_net, y_species_dim, y_embed_dim, y_amr_dim, likelihood='bernoulli', fixed_var=1.0):
+    def __init__(self, decoder_net, y_species_dim, y_embed_dim, y_amr_dim, likelihood='bernoulli', fixed_var=1.0, embedding=True):
         super().__init__()
         self.decoder = decoder_net
         self.y_embed = nn.Embedding(y_species_dim, y_embed_dim)
         self.y_amr_dim = y_amr_dim
         self.likelihood = likelihood
         self.var = fixed_var
+        self.embedding = embedding
 
     def get_cond(self, y_species, y_amr):
-        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim)
+        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim, embedding=self.embedding)
 
     def decode(self, z, cond):
         """Low-level decoder call with precomputed cond."""
@@ -177,18 +179,20 @@ class ConditionalDecoder(nn.Module):
             return log_prob
 
 class ConditionalPrior(nn.Module):
-    def __init__(self, y_species_dim, y_embed_dim, y_amr_dim, latent_dim, prior_hidden1=128, prior_hidden2=64):
+    def __init__(self, y_species_dim, y_embed_dim, y_amr_dim, latent_dim, prior_hidden1=128, prior_hidden2=64, embedding=True):
         super().__init__()
         self.y_embed = nn.Embedding(y_species_dim, y_embed_dim)
         self.y_amr_dim = y_amr_dim
+        cond_dim = y_embed_dim + y_amr_dim if embedding else y_species_dim + y_amr_dim
         self.fc = nn.Sequential(
-            nn.Linear(y_embed_dim + y_amr_dim, prior_hidden1), nn.LeakyReLU(),
+            nn.Linear(cond_dim, prior_hidden1), nn.LeakyReLU(),
             nn.Linear(prior_hidden1, prior_hidden2), nn.LeakyReLU(),
             nn.Linear(prior_hidden2, 2 * latent_dim)
         )
+        self.embedding = embedding
 
     def get_cond(self, y_species, y_amr):
-        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim)
+        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim, embedding=self.embedding)
 
     def forward(self, y_species, y_amr=None):
         cond = self.get_cond(y_species, y_amr)
@@ -199,11 +203,11 @@ class ConditionalPrior(nn.Module):
 class ConditionalVAE(nn.Module):
     def __init__(self, encoder_net, decoder_net,
                 y_species_dim, y_embed_dim, y_amr_dim,
-                latent_dim, likelihood='bernoulli', fixed_var=1.0, beta=1.0):
+                latent_dim, embedding=True, likelihood='bernoulli', fixed_var=1.0, beta=1.0):
         super().__init__()
-        self.encoder = ConditionalEncoder(encoder_net, y_species_dim, y_embed_dim, y_amr_dim)
-        self.decoder = ConditionalDecoder(decoder_net, y_species_dim, y_embed_dim, y_amr_dim, likelihood, fixed_var)
-        self.prior = ConditionalPrior(y_species_dim, y_embed_dim, y_amr_dim, latent_dim)
+        self.encoder = ConditionalEncoder(encoder_net, y_species_dim, y_embed_dim, y_amr_dim, embedding=embedding)
+        self.decoder = ConditionalDecoder(decoder_net, y_species_dim, y_embed_dim, y_amr_dim, likelihood, fixed_var, embedding=embedding)
+        self.prior = ConditionalPrior(y_species_dim, y_embed_dim, y_amr_dim, latent_dim, embedding=embedding)
         self.beta = beta
 
     def forward(self, x, y_species, y_amr=None):

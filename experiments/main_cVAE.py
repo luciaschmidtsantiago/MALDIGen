@@ -45,8 +45,9 @@ def main():
     y_species_dim = config['y_species_dim']
     y_embed_dim = config['y_embed_dim']
     y_amr_dim = config.get('y_amr_dim', 0)  # Can be 0 if no AMR info used
-    cond_dim = y_embed_dim + y_amr_dim
     get_labels = config.get('get_labels', False)
+    embedding = config.get('embedding', True)
+    cond_dim = y_embed_dim + y_amr_dim if embedding else y_species_dim + y_amr_dim
 
     # Logging
     name = args.config.split('/')[-1].split('.')[0]
@@ -57,6 +58,7 @@ def main():
 
     # Config
     D, M, num_layers, num_heads, lr, num_epochs, max_patience, batch_size, max_pool, encoder, decoder, model = setup_train(config, logger)
+    logger.info(f"Using conditional dimension: {cond_dim} (embedding: {embedding})")
 
     # Data
     train, val, test, ood = load_data(config['pickle_marisma'], config['pickle_driams'], logger, get_labels)
@@ -85,7 +87,7 @@ def main():
 
 
     if model == 'cVAE':
-        model = ConditionalVAE(encoder, decoder, y_species_dim, y_embed_dim, y_amr_dim, M,).to(device)
+        model = ConditionalVAE(encoder, decoder, y_species_dim, y_embed_dim, y_amr_dim, M, embedding).to(device)
     logger.info(f"Training {model.__class__.__name__}...")
 
     if args.train:

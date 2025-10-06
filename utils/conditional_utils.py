@@ -54,7 +54,6 @@ def get_condition(y_species, y_amr=None, y_embed_layer_species=None, y_embed_lay
     else:
         # y_species is categorical multi-class
         y_species_onehot = F.one_hot(y_species, num_classes=y_embed_layer_species.num_embeddings).float()
-        print(f"y_species_onehot.shape: {y_species_onehot.shape}")
         if y_amr is not None and y_amr.shape[1] > 0:
             # y_amr is expected to be multi-label binary or soft labels
             cond = torch.cat([y_species_onehot, y_amr], dim=1)
