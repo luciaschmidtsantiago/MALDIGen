@@ -3,6 +3,7 @@ import csv
 import torch
 import time
 import numpy as np
+from collections import defaultdict
 
 # from losses.PIKE import calculate_PIKE, calculate_PIKEtoMean
 from losses.PIKE_GPU import calculate_PIKE_gpu
@@ -20,49 +21,77 @@ def reconerrorPIKE(model, data_loader, logger=None, labels=None):
         pike_errors: List of PIKE errors for all samples.
         class_pike: Dict mapping class label to average PIKE error (if labels provided, else None).
     """
-    from collections import defaultdict
+    
     pike_errors = []
     model.eval()
     class_pike = None
+
     if labels is not None:
+        # Convert numeric labels to string names if possible
+        if hasattr(labels, 'dtype'):
+            labels_np = labels.cpu().numpy() if hasattr(labels, 'cpu') else np.array(labels)
+        else:
+            labels_np = np.array(labels)
+        # If integer, map to string names using label_names
+        if np.issubdtype(labels_np.dtype, np.integer) and hasattr(data_loader.dataset, 'label_names'):
+            label_names = np.array(data_loader.dataset.label_names)
+            labels_str = label_names[labels_np]
+        else:
+            labels_str = labels_np
         pike_by_class = defaultdict(list)
         sample_idx = 0
+
     total_samples = 0
     with torch.no_grad():
-        for batch_idx, test_batch in enumerate(data_loader):
+        for batch_idx, batch in enumerate(data_loader):
             device = next(model.parameters()).device
-            test_batch = test_batch.to(device)
-            mu, logvar = model.encoder.encode(test_batch)
-            z = mu  # use mean of posterior
-            x_hat = model.decoder(z)
+            # Robust batch unpacking for conditional/non-conditional
+            if isinstance(batch, (list, tuple)):
+                test_batch = batch[0].to(device)
+                y_species = batch[1].to(device) if len(batch) > 1 else None
+            else:
+                test_batch = batch.to(device)
+                y_species = None
+
+            # Forward pass
+            if y_species is not None:
+                mu, logvar = model.encoder(test_batch, y_species)
+                z = mu
+                x_hat = model.decoder(z, y_species)
+            else:
+                mu, logvar = model.encoder.forward(test_batch)
+                z = mu
+                x_hat = model.decoder(z)
+
             x_true = test_batch.cpu().numpy()
             x_hat = x_hat.cpu().numpy()
             batch_size = x_true.shape[0]
+
             if labels is not None:
-                batch_labels = labels[sample_idx:sample_idx+batch_size]
+                batch_labels = labels_str[sample_idx:sample_idx+batch_size]
+
             # Compute PIKE error for each sample in batch
             for i in range(batch_size):
                 x_true_tensor = torch.tensor(x_true[i], device=device)
                 x_hat_tensor = torch.tensor(x_hat[i], device=device)
+
                 pike_err = calculate_PIKE_gpu(x_true_tensor, x_hat_tensor)
                 pike_errors.append(pike_err)
+
                 if labels is not None:
                     pike_by_class[batch_labels[i]].append(pike_err)
-                if logger is not None and total_samples + i + 1 <= 10:
-                    logger.info(f"Test sample {total_samples + i + 1}: PIKE RE = {pike_err:.4f}")
             total_samples += batch_size
-            if logger is not None:
-                logger.info(f"Processed batch {batch_idx+1} of test set.")
+            logger.info(f"Processed batch {batch_idx+1} of test set.")
+
             if labels is not None:
                 sample_idx += batch_size
+
     mean_pike = np.mean(pike_errors)
-    if logger is not None:
-        logger.info(f"Mean PIKE reconstruction error (n={total_samples}): {mean_pike:.4f}")
+    logger.info(f"Mean PIKE reconstruction error (n={total_samples}): {mean_pike:.4f}")
     if labels is not None:
-        class_pike = {cls: np.mean(errs) for cls, errs in pike_by_class.items()}
-        if logger is not None:
-            for cls, avg_pike in class_pike.items():
-                logger.info(f"Class {cls}: mean PIKE RE = {avg_pike:.4f} (n={len(pike_by_class[cls])})")
+        class_pike = {str(cls): np.mean(errs) for cls, errs in pike_by_class.items()}
+        for cls, avg_pike in class_pike.items():
+            logger.info(f"Species {cls}: mean PIKE RE = {avg_pike:.4f} (n={len(pike_by_class[cls])})")
     return mean_pike, pike_errors, class_pike
 
 def write_pike_csv(name, class_pike_dict, total_pike, config, label_order=None):
@@ -110,8 +139,8 @@ def compute_val_time_metrics(model, val, config):
         model.eval()
         with torch.no_grad():
             start = time.time()
-            if hasattr(model.encoder, "encode"):
-                mu, _ = model.encoder.encode(X)
+            if hasattr(model.encoder, "forward"):
+                mu, _ = model.encoder.forward(X)
             else:
                 mu = model.encoder(X)
                 mu = mu[:, :mu.size(1) // 2]  # assume [mu, logvar] if not split
