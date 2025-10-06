@@ -2,62 +2,93 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Simple MLP encoder/decoder for 1D spectra (no conditioning)
 class MLPEncoder1D(nn.Module):
-    def __init__(self, D, num_layers, latent_dim):
+    def __init__(self, input_dim, num_layers, latent_dim, cond_dim=0):
         super().__init__()
+        self.cond_dim = cond_dim
+        self.in_dim = input_dim + cond_dim
+
         layers = []
 
-        # Start from last hidden layer: 4 * latent_dim
-        current = 4 * latent_dim
-        hidden_dims = [current]
+        # Create hidden dims: [8*latent, 4*latent, ..., 4*latent] (last hidden always 4*latent)
+        hidden_dims = [2 ** (num_layers + 1 - i) * latent_dim for i in range(num_layers - 1)]
+        hidden_dims.append(4 * latent_dim)  # Last hidden layer before projection
 
-        # Prepend layers: each one is 2 * next
-        for _ in range(num_layers - 1):
-            current = 2 * current
-            hidden_dims.insert(0, current)
-
-        # Build layers
-        in_dim = D
         for out_dim in hidden_dims:
-            layers.append(nn.Linear(in_dim, out_dim))
-            layers.append(nn.LeakyReLU())
-            in_dim = out_dim
+            layers.append(nn.Linear(self.in_dim, out_dim))
+            layers.append(nn.ReLU())
+            self.in_dim = out_dim
 
-        # Final layer: outputs [μ, logσ²]
-        layers.append(nn.Linear(in_dim, 2 * latent_dim))
+        # Final projection to [μ, logσ²]
+        layers.append(nn.Linear(self.in_dim, 2 * latent_dim))
         self.net = nn.Sequential(*layers)
 
-    def forward(self, x):
-        return self.net(x)
+    def forward(self, x, cond=None):
+        if cond is not None:
+            x = torch.cat([x, cond], dim=1) # [batch_size, input_dim + cond_dim]
+        h = self.net(x) # [batch_size, final_hidden_dim]
+        return h
 
 class MLPDecoder1D(nn.Module):
-    def __init__(self, latent_dim, num_layers, D):
+    def __init__(self, latent_dim, num_layers, output_dim, cond_dim=0):
         super().__init__()
+        self.cond_dim = cond_dim
+        self.latent_dim = latent_dim
+        self.in_dim = latent_dim + cond_dim
+
         layers = []
-
-        # Start from 4 * latent_dim
-        current = 4 * latent_dim
-        hidden_dims = [current]
-
-        # Append layers: each one is 2 * previous
-        for _ in range(num_layers - 1):
-            current = 2 * current
-            hidden_dims.append(current)
-
-        # Build layers
-        in_dim = latent_dim
-        for out_dim in hidden_dims:
-            layers.append(nn.Linear(in_dim, out_dim))
+        for i in range(num_layers):
+            out_dim = 2 ** (i + 2) * latent_dim  # e.g., 4×, 8×, 16×...
+            layers.append(nn.Linear(self.in_dim, out_dim))
             layers.append(nn.LeakyReLU())
-            in_dim = out_dim
+            self.in_dim = out_dim
 
-        # Final layer: output dimension
-        layers.append(nn.Linear(in_dim, D))
+        layers.append(nn.Linear(self.in_dim, output_dim))
         self.net = nn.Sequential(*layers)
 
-    def forward(self, z):
+    def forward(self, z, cond=None):
+        if cond is not None:
+            z = torch.cat([z, cond], dim=1)  # shape: [batch, latent_dim + cond_dim]
         return self.net(z)
+    
+
+class MLPDiscriminator(nn.Module):
+    def __init__(self, input_dim, latent_dim, num_layers=3, use_dropout=True, dropout_p=0.3):
+        """
+        Multilayer Perceptron Discriminator with configurable depth and dropout.
+        
+        Args:
+            input_dim: dimensión de entrada (D + y_embed_dim + label2_dim)
+            latent_dim: dimensión base (igual que en el encoder/generador)
+            num_layers: número de capas ocultas
+            use_dropout: si aplicar o no dropout
+            dropout_p: probabilidad de dropout
+        """
+        super().__init__()
+        
+        layers = []
+        in_dim = input_dim
+        
+        # hidden layers: 2^i * latent_dim
+        for i in range(num_layers):
+            out_dim = (2 ** (i + 2)) * latent_dim   # igual que en MLPEncoder
+            layers.append(nn.Linear(in_dim, out_dim))
+            layers.append(nn.LeakyReLU())
+            if use_dropout:
+                layers.append(nn.Dropout(dropout_p))
+            in_dim = out_dim
+        
+        # última capa: logits reales/fake
+        layers.append(nn.Linear(in_dim, 1))
+        
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x, cond=None):
+        if cond is not None:
+            h = torch.cat([x, cond], dim=1)
+        else:
+            h = x
+        return self.net(h)
     
 
 class CNNEncoder1D(nn.Module):
@@ -78,8 +109,10 @@ class CNNEncoder1D(nn.Module):
             conv_layers.append(nn.LeakyReLU())
             in_channels = out_channels
             out_channels *= 2
+            # longitud tras conv
             length = (length + 2 * 1 - 4) // 2 + 1
 
+            # cada 2 capas aplicar maxpool (excepto en la última)
             if self.max_pool and (i + 1) % 2 == 0 and i != num_layers - 1:
                 conv_layers.append(nn.MaxPool1d(2, stride=2))
                 length = (length - 2) // 2 + 1
@@ -89,7 +122,7 @@ class CNNEncoder1D(nn.Module):
 
         conv_out_dim = length * in_channels
 
-        # Recursively decreasing FC layers ending in 4*latent_dim → 2*latent_dim
+        # FC layers: de conv_out_dim hasta 2*latent_dim pasando por capas decrecientes
         fc_hidden = [4 * latent_dim * (2 ** i) for i in reversed(range(num_layers))]
         fc_layers = []
         in_dim = conv_out_dim
@@ -98,34 +131,35 @@ class CNNEncoder1D(nn.Module):
             fc_layers.append(nn.LeakyReLU())
             in_dim = out_dim
 
-        fc_layers.append(nn.Linear(in_dim, 2 * latent_dim))  # final layer
+        fc_layers.append(nn.Linear(in_dim, 2 * latent_dim))  # mean + logvar
         self.fc = nn.Sequential(*fc_layers)
 
     def forward(self, x):
         x = x.view(-1, 1, self.img_shape[1])
         h = self.conv(x)
         return self.fc(h)
-    
+
 class CNNDecoder1D(nn.Module):
     def __init__(self, latent_dim, img_shape, num_layers=3, base_channels=32, max_pool=False):
         super().__init__()
         self.img_shape = img_shape
-        self.D = img_shape[1]
         self.num_layers = num_layers
         self.base_channels = base_channels
         self.max_pool = max_pool
 
-        # Output shape after CNN encoder
+        # calcular longitud y canales de salida del encoder
         length = img_shape[1]
         channels = base_channels
+        pool_count = 0
         for i in range(num_layers):
             length = (length + 2 * 1 - 4) // 2 + 1
             channels *= 2
             if max_pool and (i + 1) % 2 == 0 and i != num_layers - 1:
                 length = (length - 2) // 2 + 1
-        channels = channels // 2
+                pool_count += 1
+        channels = channels // 2  # porque se multiplicó una vez de más
 
-        # Reverse of encoder FC layers: latent_dim → ... → 4*latent_dim
+        # capas FC inversas
         fc_hidden = [4 * latent_dim * (2 ** i) for i in range(num_layers)]
         fc_layers = []
         in_dim = latent_dim
@@ -138,73 +172,52 @@ class CNNDecoder1D(nn.Module):
         fc_layers.append(nn.LeakyReLU())
         self.fc = nn.Sequential(*fc_layers)
 
-        # Deconvolution
+        # calcular número de Upsample necesarios = conv_layers + pool_count
+        num_upsamples = num_layers + pool_count
+
+        # deconvoluciones
         deconv_layers = []
         in_channels = channels
         out_channels = in_channels // 2
-        for i in range(num_layers - 1):
+        for i in range(num_upsamples - 1):
             deconv_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
             deconv_layers.append(nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1))
             deconv_layers.append(nn.LeakyReLU())
             in_channels = out_channels
-            out_channels = in_channels // 2
+            out_channels = max(1, in_channels // 2)
 
+        # última upsample hasta 1 canal
         deconv_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
         deconv_layers.append(nn.Conv1d(in_channels, 1, kernel_size=3, padding=1))
         self.deconv = nn.Sequential(*deconv_layers)
 
     def forward(self, z):
-        # Match encoder dimensions
+        # recomputar shape base
         length = self.img_shape[1]
         channels = self.base_channels
+        pool_count = 0
         for i in range(self.num_layers):
             length = (length + 2 * 1 - 4) // 2 + 1
             channels *= 2
             if self.max_pool and (i + 1) % 2 == 0 and i != self.num_layers - 1:
                 length = (length - 2) // 2 + 1
+                pool_count += 1
         channels = channels // 2
 
         h = self.fc(z)
         h = h.view(-1, channels, length)
         x_rec = self.deconv(h)
 
-        if x_rec.dim() == 2:
-            x_rec = x_rec.unsqueeze(1)
+        # asegurar longitud = D
         out_len = x_rec.shape[2]
         target_len = self.img_shape[1]
         if out_len > target_len:
             x_rec = x_rec[:, :, :target_len]
         elif out_len < target_len:
             pad_amt = target_len - out_len
-            x_rec = torch.nn.functional.pad(x_rec, (0, pad_amt))
+            x_rec = nn.functional.pad(x_rec, (0, pad_amt))
 
         return x_rec.view(x_rec.size(0), -1)
-
-    def forward(self, z):
-        # Dynamically compute output shape to match encoder
-        length = self.img_shape[1]
-        channels = self.base_channels
-        for i in range(self.num_layers):
-            length = (length + 2*1 - 4)//2 + 1
-            channels *= 2
-            if self.max_pool and (i+1) % 2 == 0 and i != self.num_layers-1:
-                length = (length - 2)//2 + 1
-        channels = channels // 2
-        h = self.fc(z)
-        h = h.view(-1, channels, length)
-        x_rec = self.deconv(h)
-        # Ensure output length matches self.img_shape[1] (D)
-        if x_rec.dim() == 2:
-            x_rec = x_rec.unsqueeze(1)
-        out_len = x_rec.shape[2]
-        target_len = self.img_shape[1]
-        if out_len > target_len:
-            x_rec = x_rec[:, :, :target_len]
-        elif out_len < target_len:
-            pad_amt = target_len - out_len
-            x_rec = torch.nn.functional.pad(x_rec, (0, pad_amt))
-        x_rec = x_rec.view(x_rec.size(0), -1)
-        return x_rec  # Garantiza salida [batch, D]
 
 
 # --- Transformer blocks for 1D tokens ---

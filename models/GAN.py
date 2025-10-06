@@ -4,6 +4,111 @@ import torch.nn.functional as F
 
 from utils.conditional_utils import get_condition, impute_missing_labels, compute_attr_prediction_loss
 
+############### GAN ###############
+
+class Discriminator(nn.Module):
+    def __init__(self, discriminator_net):
+        """
+        Discriminador clásico que recibe x y devuelve logits de real/fake.
+        
+        Args:
+            discriminator_net: red base (MLP o CNN) que produce un escalar por input.
+        """
+        super().__init__()
+        self.discriminator = discriminator_net
+    
+    def forward(self, x):
+        """
+        Args:
+            x: tensor [batch, input_dim] datos reales o generados
+        
+        Returns:
+            logits: tensor [batch, 1] logits de probabilidad real/fake
+        """
+        logits = self.discriminator(x)
+        return logits
+
+
+class GAN(nn.Module):
+    def __init__(self, generator, discriminator, latent_dim=128, lambda_g=1.0, lambda_d=1.0):
+        """
+        GAN no-condicional clásica.
+        
+        Args:
+            generator: red generadora que recibe ruido y produce espectros
+            discriminator: red discriminadora
+            latent_dim: dimensión del espacio latente para el ruido
+            lambda_g: peso para la pérdida del generador
+            lambda_d: peso para la pérdida del discriminador
+        """
+        super().__init__()
+        self.generator = generator
+        self.discriminator = discriminator
+        self.latent_dim = latent_dim
+        self.lambda_g = lambda_g
+        self.lambda_d = lambda_d
+    
+    def forward(self, x_real):
+        """
+        Forward pass que calcula ambas pérdidas (discriminador + generador).
+        
+        Args:
+            x_real: tensor [batch, input_dim] datos reales
+        
+        Returns:
+            total_loss: pérdida total
+            d_loss: pérdida del discriminador
+            g_loss: pérdida del generador
+        """
+        batch_size = x_real.size(0)
+
+        # === PÉRDIDA DEL DISCRIMINADOR ===
+        # 1. Discriminador en datos reales
+        real_logits = self.discriminator(x_real)
+        real_loss = F.binary_cross_entropy_with_logits(
+            real_logits, torch.ones_like(real_logits)
+        )
+        
+        # 2. Generar datos fake
+        noise = torch.randn(batch_size, self.latent_dim, device=x_real.device)
+        x_fake = self.generator(noise)
+        
+        # 3. Discriminador en datos fake
+        fake_logits_d = self.discriminator(x_fake.detach())
+        fake_loss = F.binary_cross_entropy_with_logits(
+            fake_logits_d, torch.zeros_like(fake_logits_d)
+        )
+        
+        d_loss = real_loss + fake_loss
+        
+        # === PÉRDIDA DEL GENERADOR ===
+        fake_logits_g = self.discriminator(x_fake)  # ahora sí se propaga a G
+        g_loss = F.binary_cross_entropy_with_logits(
+            fake_logits_g, torch.ones_like(fake_logits_g)
+        )
+        
+        # === PÉRDIDA TOTAL ===
+        total_loss = self.lambda_d * d_loss + self.lambda_g * g_loss
+        
+        return total_loss, d_loss, g_loss
+    
+    def sample(self, batch_size=64, device="cpu"):
+        """
+        Generar muestras no-condicionales
+        
+        Args:
+            batch_size: número de muestras
+            device: dispositivo
+        Returns:
+            x_fake: tensor [batch, input_dim] muestras generadas
+        """
+        noise = torch.randn(batch_size, self.latent_dim, device=device)
+        x_fake = self.generator(noise)
+        return x_fake
+
+
+
+################ Conditional GAN ###############
 
 class ConditionalDiscriminator(nn.Module):
     def __init__(self, discriminator_net, y_dim, y_embed_dim, label2_dim):
@@ -25,7 +130,6 @@ class ConditionalDiscriminator(nn.Module):
         """
         logits = self.discriminator(x, cond)
         return logits
-
 
 class ConditionalGAN(nn.Module):
     def __init__(self, generator, discriminator, latent_dim=128, lambda_g=1.0, lambda_d=1.0):
@@ -115,6 +219,9 @@ class ConditionalGAN(nn.Module):
         
         return x_fake
 
+
+
+################ Semi-supervised Conditional GAN ###############
 
 class SemisupervisedConditionalGAN(ConditionalGAN):
     def __init__(self, generator, discriminator, attr_predictor, latent_dim=128, lambda_g=1.0, lambda_d=1.0, alpha=1.0, missing_strategy='soft'):

@@ -27,7 +27,7 @@ class Encoder(nn.Module):
         z = mu + std * eps                     # Sample z
         return z                # Sample z
 
-    def encode(self, x):
+    def forward(self, x):
         # Forward input x through the encoder network to get mu and log_var
         h_e = self.encoder(x)                 # Output is of size 2M
         mu_e, log_var_e = torch.chunk(h_e, 2, dim=1)  # Split into two parts: mean and log variance
@@ -38,7 +38,7 @@ class Encoder(nn.Module):
         # Return a sample from the approximate posterior
         # Can either compute mu/log_var from x or take them as input
         if (mu_e is None) and (log_var_e is None):
-            mu_e, log_var_e = self.encode(x)
+            mu_e, log_var_e = self.forward(x)
         else:
             if (mu_e is None) or (log_var_e is None):
                 raise ValueError('mu and log_var can\'t be None!')
@@ -53,17 +53,17 @@ class BernoulliDecoder(nn.Module):
         super(BernoulliDecoder, self).__init__()
         self.decoder = decoder_net
 
-    def decode(self, z):
+    def forward(self, z):
         logits = self.decoder(z)
         probs = torch.sigmoid(logits)
         return probs
 
     def sample(self, z):
-        probs = self.decode(z)
+        probs = self.forward(z)
         return probs  # Return probabilities in [0,1]
 
     def log_prob(self, x, z):
-        theta = self.decode(z)  # Use sigmoid output
+        theta = self.forward(z)  # Use sigmoid output
         # Check x values are between 0 and 1
         if torch.any(theta < 0) or torch.any(theta > 1) or torch.isnan(theta).any():
             raise ValueError(f"[ERROR] theta (decoder output) out of bounds: min={theta.min()}, max={theta.max()}")
@@ -93,11 +93,12 @@ class VAE_Bernoulli(nn.Module):
         self.prior = Prior(M=M)
 
     def forward(self, x):
-        mu_e, log_var_e = self.encoder.encode(x)
+        mu_e, log_var_e = self.encoder.forward(x)
         z = self.encoder.sample(mu_e=mu_e, log_var_e=log_var_e)
         RE = self.decoder.log_prob(x, z)
         KL = -0.5 * torch.sum(torch.exp(log_var_e) + mu_e**2 - 1 - log_var_e, dim=1)
-        return -(RE + KL).sum()
+        NLL = -(RE + KL).mean()
+        return NLL, KL.mean()
 
     def sample(self, batch_size=64):
         z = self.prior.sample(batch_size=batch_size)
@@ -113,7 +114,7 @@ class ConditionalEncoder(nn.Module):
         self.y_amr_dim = y_amr_dim
 
     def get_cond(self, y_species, y_amr):
-        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim, embedding=True)
+        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim)
 
     def forward(self, x, y_species, y_amr=None):
         cond = self.get_cond(y_species, y_amr)
@@ -138,39 +139,41 @@ class ConditionalDecoder(nn.Module):
         self.var = fixed_var
 
     def get_cond(self, y_species, y_amr):
-        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim, embedding=True)
+        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim)
+
+    def decode(self, z, cond):
+        """Low-level decoder call with precomputed cond."""
+        return self.decoder(z, cond)
 
     def forward(self, z, y_species, y_amr=None):
         cond = self.get_cond(y_species, y_amr)
-        out = self.decoder(z, cond)
+        logits = self.decode(z, cond)
         if self.likelihood == 'gaussian':
-            mu =out
-            return mu
+            return logits
         else:
-            logits = out
             probs = torch.sigmoid(logits)
             return probs
-    
+
     def sample(self, z, y_species, y_amr=None):
         cond = self.get_cond(y_species, y_amr)
+        out = self.decode(z, cond)
         if self.likelihood == 'gaussian':
-            mu = self.forward(z, cond)
-            std = torch.sqrt(torch.tensor(self.var)).to(mu.device)
-            eps = torch.randn_like(mu)
-            return mu + eps * std
+            std = torch.sqrt(torch.tensor(self.var)).to(out.device)
+            eps = torch.randn_like(out)
+            return out + eps * std
         else:
-            probs = self.forward(z, cond)
-            return probs
-    
+            return torch.sigmoid(out)
+
     def log_prob(self, x, z, cond):
         x_flat = x.view(x.size(0), -1)
+        out = self.decode(z, cond)
+
         if self.likelihood == 'gaussian':
-            mu = self.forward(z, cond)
-            log_prob = -0.5 * ((x_flat - mu) ** 2) / self.var - 0.5 * torch.log(2 * torch.pi * torch.tensor(self.var))
+            log_prob = -0.5 * ((x_flat - out) ** 2) / self.var - 0.5 * torch.log(2 * torch.pi * torch.tensor(self.var))
             return log_prob.sum(dim=-1)
         else:
-            theta = self.forward(z, cond)
-            log_prob = -F.binary_cross_entropy(theta, x_flat, reduction='none').sum(dim=1)
+            probs = torch.sigmoid(out)
+            log_prob = -F.binary_cross_entropy(probs, x_flat, reduction='none').sum(dim=1)
             return log_prob
 
 class ConditionalPrior(nn.Module):
@@ -185,7 +188,7 @@ class ConditionalPrior(nn.Module):
         )
 
     def get_cond(self, y_species, y_amr):
-        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim, embedding=True)
+        return get_condition(y_species, y_amr, self.y_embed, self.y_amr_dim)
 
     def forward(self, y_species, y_amr=None):
         cond = self.get_cond(y_species, y_amr)
@@ -206,11 +209,12 @@ class ConditionalVAE(nn.Module):
     def forward(self, x, y_species, y_amr=None):
         mu_e, log_var_e = self.encoder(x, y_species, y_amr)
         z = self.encoder.sample(mu_e=mu_e, log_var_e=log_var_e)
-        RE = self.decoder.log_prob(x, z, self.decoder.get_cond(y_species, y_amr))
+        cond = self.decoder.get_cond(y_species, y_amr) # Precompute cond
+        RE = self.decoder.log_prob(x, z, cond)
         mu_p, log_var_p = self.prior(y_species, y_amr)
         KL = -0.5 * torch.sum(1 + (log_var_e - log_var_p) - ((mu_e - mu_p).pow(2) + log_var_e.exp()) / log_var_p.exp(), dim=1)
-        vae_loss = -(RE - self.beta * KL).mean()
-        return vae_loss
+        NLL = -(RE - self.beta * KL).mean()
+        return NLL, KL.mean()
     
     def sample(self, y_species, y_amr=None):
         mu_p, log_var_p = self.prior(y_species, y_amr)
@@ -219,7 +223,6 @@ class ConditionalVAE(nn.Module):
         z = mu_p + std * eps
         return self.decoder.sample(z, y_species, y_amr)
     
-
 
 ################ Semi-supervised Conditional VAE ###############
 class SemisupervisedConditionalVAE(ConditionalVAE):
