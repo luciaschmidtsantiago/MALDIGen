@@ -19,7 +19,7 @@ from pytorch_model_summary import summary
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models.VAE import VAE_Bernoulli, ConditionalVAE
+from models.VAE import VAE_Bernoulli
 from models.Networks import MLPEncoder1D, MLPDecoder1D, CNNDecoder1D, CNNEncoder1D, CNNAttenEncoder, CNNAttenDecoder
 from dataloader.data import load_data, get_dataloaders
 from utils.training_utils import run_experiment, setuplogging, setup_train, evaluation
