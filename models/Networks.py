@@ -52,53 +52,19 @@ class MLPDecoder1D(nn.Module):
         return self.net(z)
     
 
-class MLPDiscriminator(nn.Module):
-    def __init__(self, input_dim, latent_dim, num_layers=3, use_dropout=True, dropout_p=0.3):
-        """
-        Multilayer Perceptron Discriminator with configurable depth and dropout.
-        
-        Args:
-            input_dim: dimensión de entrada (D + y_embed_dim + label2_dim)
-            latent_dim: dimensión base (igual que en el encoder/generador)
-            num_layers: número de capas ocultas
-            use_dropout: si aplicar o no dropout
-            dropout_p: probabilidad de dropout
-        """
-        super().__init__()
-        
-        layers = []
-        in_dim = input_dim
-        
-        # hidden layers: 2^i * latent_dim
-        for i in range(num_layers):
-            out_dim = (2 ** (i + 2)) * latent_dim   # igual que en MLPEncoder
-            layers.append(nn.Linear(in_dim, out_dim))
-            layers.append(nn.LeakyReLU())
-            if use_dropout:
-                layers.append(nn.Dropout(dropout_p))
-            in_dim = out_dim
-        
-        # última capa: logits reales/fake
-        layers.append(nn.Linear(in_dim, 1))
-        
-        self.net = nn.Sequential(*layers)
-
-    def forward(self, x, cond=None):
-        if cond is not None:
-            h = torch.cat([x, cond], dim=1)
-        else:
-            h = x
-        return self.net(h)
-    
-
 class CNNEncoder1D(nn.Module):
-    def __init__(self, latent_dim, img_shape, num_layers=3, base_channels=32, max_pool=False):
+    """
+    CNN encoder that conditions on a label embedding after convolutional layers when cond_dim > 0.
+    """
+    def __init__(self, latent_dim, img_shape, num_layers=3, base_channels=32, max_pool=False, cond_dim=0):
         super().__init__()
         self.img_shape = img_shape
         self.num_layers = num_layers
         self.base_channels = base_channels
         self.max_pool = max_pool
+        self.cond_dim = cond_dim
 
+        # ----- Convolutional feature extractor -----
         conv_layers = []
         in_channels = 1
         out_channels = base_channels
@@ -109,10 +75,9 @@ class CNNEncoder1D(nn.Module):
             conv_layers.append(nn.LeakyReLU())
             in_channels = out_channels
             out_channels *= 2
-            # longitud tras conv
-            length = (length + 2 * 1 - 4) // 2 + 1
 
-            # cada 2 capas aplicar maxpool (excepto en la última)
+            length = (length + 2 * 1 - 4) // 2 + 1  # after stride-2 conv
+
             if self.max_pool and (i + 1) % 2 == 0 and i != num_layers - 1:
                 conv_layers.append(nn.MaxPool1d(2, stride=2))
                 length = (length - 2) // 2 + 1
@@ -120,34 +85,44 @@ class CNNEncoder1D(nn.Module):
         conv_layers.append(nn.Flatten())
         self.conv = nn.Sequential(*conv_layers)
 
+        # Flattened feature size from CNN
         conv_out_dim = length * in_channels
 
-        # FC layers: de conv_out_dim hasta 2*latent_dim pasando por capas decrecientes
+        # ----- Fully connected projection -----
+        # The conditioning vector is concatenated here -> conv_out_dim + cond_dim
         fc_hidden = [4 * latent_dim * (2 ** i) for i in reversed(range(num_layers))]
         fc_layers = []
-        in_dim = conv_out_dim
+        in_dim = conv_out_dim + cond_dim
+
         for out_dim in fc_hidden:
             fc_layers.append(nn.Linear(in_dim, out_dim))
             fc_layers.append(nn.LeakyReLU())
             in_dim = out_dim
 
-        fc_layers.append(nn.Linear(in_dim, 2 * latent_dim))  # mean + logvar
+        fc_layers.append(nn.Linear(in_dim, 2 * latent_dim))  # outputs mean + logvar
         self.fc = nn.Sequential(*fc_layers)
 
-    def forward(self, x):
+    def forward(self, x, cond=None):
+        # x: [batch, D]
         x = x.view(-1, 1, self.img_shape[1])
-        h = self.conv(x)
+        h = self.conv(x)  # CNN feature map flattened
+        if cond is not None:
+            h = torch.cat([h, cond], dim=1)
         return self.fc(h)
 
 class CNNDecoder1D(nn.Module):
-    def __init__(self, latent_dim, img_shape, num_layers=3, base_channels=32, max_pool=False):
+    """
+    CNN decoder that conditions on label embedding concatenated to the latent vector when cond_dim > 0.
+    """
+    def __init__(self, latent_dim, img_shape, num_layers=3, base_channels=32, max_pool=False, cond_dim=0):
         super().__init__()
         self.img_shape = img_shape
         self.num_layers = num_layers
         self.base_channels = base_channels
         self.max_pool = max_pool
+        self.cond_dim = cond_dim
 
-        # calcular longitud y canales de salida del encoder
+        # ----- Mirror the encoder’s feature shape -----
         length = img_shape[1]
         channels = base_channels
         pool_count = 0
@@ -157,12 +132,13 @@ class CNNDecoder1D(nn.Module):
             if max_pool and (i + 1) % 2 == 0 and i != num_layers - 1:
                 length = (length - 2) // 2 + 1
                 pool_count += 1
-        channels = channels // 2  # porque se multiplicó una vez de más
+        channels = channels // 2
 
-        # capas FC inversas
+        # ----- Fully connected expansion -----
         fc_hidden = [4 * latent_dim * (2 ** i) for i in range(num_layers)]
         fc_layers = []
-        in_dim = latent_dim
+        in_dim = latent_dim + cond_dim  # conditioning added here
+
         for out_dim in fc_hidden:
             fc_layers.append(nn.Linear(in_dim, out_dim))
             fc_layers.append(nn.LeakyReLU())
@@ -172,13 +148,12 @@ class CNNDecoder1D(nn.Module):
         fc_layers.append(nn.LeakyReLU())
         self.fc = nn.Sequential(*fc_layers)
 
-        # calcular número de Upsample necesarios = conv_layers + pool_count
+        # ----- Deconvolutional upsampling -----
         num_upsamples = num_layers + pool_count
-
-        # deconvoluciones
         deconv_layers = []
         in_channels = channels
         out_channels = in_channels // 2
+
         for i in range(num_upsamples - 1):
             deconv_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
             deconv_layers.append(nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1))
@@ -186,13 +161,15 @@ class CNNDecoder1D(nn.Module):
             in_channels = out_channels
             out_channels = max(1, in_channels // 2)
 
-        # última upsample hasta 1 canal
         deconv_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
         deconv_layers.append(nn.Conv1d(in_channels, 1, kernel_size=3, padding=1))
         self.deconv = nn.Sequential(*deconv_layers)
 
-    def forward(self, z):
-        # recomputar shape base
+    def forward(self, z, cond=None):
+        if cond is not None:
+            z = torch.cat([z, cond], dim=1)
+        h = self.fc(z)
+        # Reshape for Conv1d
         length = self.img_shape[1]
         channels = self.base_channels
         pool_count = 0
@@ -204,13 +181,12 @@ class CNNDecoder1D(nn.Module):
                 pool_count += 1
         channels = channels // 2
 
-        h = self.fc(z)
         h = h.view(-1, channels, length)
         x_rec = self.deconv(h)
 
-        # asegurar longitud = D
-        out_len = x_rec.shape[2]
+        # Match original dimension
         target_len = self.img_shape[1]
+        out_len = x_rec.shape[2]
         if out_len > target_len:
             x_rec = x_rec[:, :, :target_len]
         elif out_len < target_len:
