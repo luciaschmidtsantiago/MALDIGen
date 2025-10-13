@@ -326,7 +326,11 @@ def training_gan(train_loader, val_loader, generator, discriminator, criterion, 
         epoch_g_loss = 0.0
         num_batches = 0
 
-        for x_real in train_loader:
+        for batch in train_loader:
+            if isinstance(batch, (list, tuple)):
+                x_real, y_real = batch[0], batch[1]
+            else:
+                x_real = batch
             x_real = x_real.to(device)
             batch_size = x_real.size(0)
             valid = torch.ones(batch_size, 1).to(device)
@@ -423,7 +427,11 @@ def evaluation_gan(loader, generator, discriminator, criterion, latent_dim, devi
     d_loss_total, g_loss_total, n_batches = 0.0, 0.0, 0
 
     with torch.no_grad():
-        for x_real in loader:
+        for batch in loader:
+            if isinstance(batch, (list, tuple)):
+                x_real, y_real = batch[0], batch[1]
+            else:
+                x_real = batch
             x_real = x_real.to(device)
             batch_size = x_real.size(0)
 
