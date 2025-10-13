@@ -627,7 +627,7 @@ def training_curve_gan(history, results_path):
 
     print(f"Saved training curve to: {save_path}")
 
-def plot_gan_meanVSgenerated(generated_spectra, mean_spectra, results_path):
+def plot_gan_meanVSgenerated(generated_sample, mean_spectra, results_path):
 	"""
 	Plot one generated spectrum per label over its mean real spectrum (6 subplots total).
 	Each subplot shows the mean spectrum (color) and generated spectrum (light gray),
@@ -663,11 +663,10 @@ def plot_gan_meanVSgenerated(generated_spectra, mean_spectra, results_path):
 		ax = axes[i]
 		color = LABEL_TO_COLOR.get(label_name, 'blue')
 
-		gen_spec = generated_spectra[i]
 		mean_spec = mean_spectra[i]
 
 		# Calculate PIKE
-		gen_spec_t = to_tensor(gen_spec)
+		gen_spec_t = to_tensor(generated_sample)
 		mean_spec_t = to_tensor(mean_spec)
 		try:
 			pike_val = calculate_PIKE_gpu(gen_spec_t, mean_spec_t)
@@ -677,7 +676,7 @@ def plot_gan_meanVSgenerated(generated_spectra, mean_spectra, results_path):
 			pike_val = pike_val.item()
 
 		# Plot generated spectrum (light gray)
-		ax.plot(to_numpy(gen_spec), color='lightgray', linewidth=1.5, label='Generated')
+		ax.plot(to_numpy(generated_sample), color='lightgray', linewidth=1.5, label='Generated')
 
 		# Plot mean spectrum (label color)
 		ax.plot(to_numpy(mean_spec), color=color, linewidth=2.5, label='Mean spectrum')
