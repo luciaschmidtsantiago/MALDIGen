@@ -27,6 +27,50 @@ class GenerationNetwork(nn.Module):
         h = self.bn3(h) if self.bn3 else h
         return torch.sigmoid(self.fc_out(h))  # spectra in [0,1]
 
+class MLPDecoder1D_Generator(nn.Module):
+    def __init__(self, latent_dim, num_layers, output_dim, cond_dim=0, use_bn=False):
+        """ Flexible MLP generator (decoder) with optional Batch Normalization.
+        Args:
+            latent_dim (int): Dimension of the latent noise vector.
+            num_layers (int): Number of hidden layers.
+            output_dim (int): Dimension of the output spectrum.
+            cond_dim (int): Dimension of conditional vector (0 for unconditional).
+            use_bn (bool): Whether to include BatchNorm1d layers.
+        """
+        super().__init__()
+        self.cond_dim = cond_dim
+        self.latent_dim = latent_dim
+        self.in_dim = latent_dim + cond_dim
+        self.use_bn = use_bn
+
+        layers = []
+        in_dim = self.in_dim
+
+        for i in range(num_layers):
+            out_dim = 2 ** (i + 2) * latent_dim  # 4×, 8×, 16×...
+            layers.append(nn.Linear(in_dim, out_dim))
+            if self.use_bn:
+                layers.append(nn.BatchNorm1d(out_dim))
+            layers.append(nn.LeakyReLU(0.2))
+            in_dim = out_dim
+
+        # Output layer: maps to final spectrum dimension
+        layers.append(nn.Linear(in_dim, output_dim))
+        layers.append(nn.Sigmoid())  # normalize output between [0,1]
+
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, z, cond=None):
+        """ Forward pass through the generator.
+        Args:
+            z (torch.Tensor): Latent noise tensor [batch, latent_dim].
+            cond (torch.Tensor, optional): Conditional vector [batch, cond_dim].
+        Returns: torch.Tensor: Generated output [batch, output_dim].
+        """
+        if cond is not None:
+            z = torch.cat([z, cond], dim=1)
+        return self.net(z)
+
 
 # Discriminator: D(x, y)
 class Discriminator(nn.Module):

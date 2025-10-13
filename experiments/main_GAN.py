@@ -16,7 +16,7 @@ from pytorch_model_summary import summary
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models.GAN import GenerationNetwork, Discriminator
+from models.GAN import GenerationNetwork, Discriminator, MLPDecoder1D_Generator
 from dataloader.data import compute_mean_spectra_per_label, load_data, get_dataloaders
 from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan
 from utils.visualization import plot_gan_meanVSgenerated
@@ -49,6 +49,7 @@ def main():
     latent_dim = config.get('latent_dim', 32)
     image_dim = config.get('input_dim', 6000)
     num_epochs = config.get('epochs', 30)
+    num_layers = config.get('n_layers', 3)
     batch_norm = config.get('batch_norm', False)
     lr_g = config.get('lr_g', 2e-4)
     lr_d = config.get('lr_d', 1e-4)
@@ -59,7 +60,7 @@ def main():
     logger.info(f"\nInput dimension: {image_dim}\nLatent dimension: {latent_dim}\nLearning rate (G): {lr_g}\nLearning rate (D): {lr_d}\nMax epochs: {num_epochs}\nMax patience: {max_patience}\nBatch size: {batch_size}\nBatch norm: {batch_norm}")
 
     # Data
-    train, val, test, ood = load_data(config['pickle_marisma'], config['pickle_driams'], logger)
+    train, val, test, ood = load_data(config['pickle_marisma'], config['pickle_driams'], logger, get_labels=True)
     train_loader, val_loader, test_loader, ood_loader = get_dataloaders(train, val, test, ood, batch_size)
 
     # Set device
@@ -67,7 +68,8 @@ def main():
     logger.info(f"Using device: {device}")
 
     # Initialize models
-    generator = GenerationNetwork(latent_dim, image_dim, batch_norm).to(device)
+    # generator = GenerationNetwork(latent_dim, image_dim, batch_norm).to(device)
+    generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=0, use_bn=batch_norm).to(device)
     discriminator = Discriminator(image_dim).to(device)
 
     logger.info("\nGENERATOR:\n" + str(summary(generator, torch.zeros(1, latent_dim).to(device), show_input=False, show_hierarchical=False)))
@@ -112,7 +114,8 @@ def main():
 
     # Generate and plot spectra with respect to the TRAINING SET
     mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device, logger)
-
+    mean_spectra_list = [mean_spectra_train[i].squeeze(0) for i in range(len(mean_spectra_train))]
+    print(f"Mean spectra per label (train set) computed for {len(mean_spectra_list)} labels.")
 
     n_samples = 6
     z = torch.randn(n_samples, latent_dim).to(device)
@@ -120,11 +123,12 @@ def main():
     with torch.no_grad():
         for i in range(n_samples):
             start = time.time()
-            sample = generator(z[i].unsqueeze(0)).cpu()  # [1, image_dim], already passed through sigmoid in generator
+            sample = generator(z[i].unsqueeze(0)).cpu().squeeze(0)  # [1, image_dim], already passed through sigmoid in generator
             end = time.time()
             gen_times.append(end - start)
             saving_path = os.path.join(results_path, 'plots', f'GAN_generated_spectrum_{i+1}.png')
-            plot_gan_meanVSgenerated(mean_spectra_train, sample, saving_path)
+            os.makedirs(os.path.dirname(saving_path), exist_ok=True)
+            plot_gan_meanVSgenerated(sample, mean_spectra_list, saving_path)
     avg_gen_time = sum(gen_times) / n_samples
     metadata['avg_generation_time'] = avg_gen_time
     logger.info(f"Average generation time per spectrum: {avg_gen_time:.6f} sec")
