@@ -13,13 +13,17 @@ class MALDI(Dataset):
     """
     def __init__(self, data, labels, normalization=True, get_labels=False):
         self.data = torch.tensor(data, dtype=torch.float32)
-        # If labels are strings, map to integers
+        self.normalization = normalization
+        self.get_labels = get_labels
+
         if isinstance(labels[0], str):
             label_map = {label: idx for idx, label in enumerate(np.unique(labels))}
             labels = np.vectorize(label_map.get)(labels)
+            self.label_convergence = {v: str(k) for k, v in label_map.items()}  # int → string
+        else:
+            self.label_convergence = None
+
         self.labels = torch.tensor(labels, dtype=torch.long)
-        self.normalization = normalization
-        self.get_labels = get_labels
 
     def __len__(self):
         return len(self.data)
@@ -91,3 +95,48 @@ def get_dataloaders(train_ds, val_ds, test_ds, ood_ds, batch_size):
     test_loader  = DataLoader(test_ds, batch_size=batch_size)
     ood_loader   = DataLoader(ood_ds, batch_size=batch_size)
     return train_loader, val_loader, test_loader, ood_loader
+
+def compute_mean_spectra_per_label(loader, device=None, logger=None):
+    """
+    Compute the mean spectrum per label from a DataLoader.
+
+    Args:
+        loader (DataLoader): PyTorch DataLoader returning (x, y) batches.
+        device (torch.device, optional): Device to move tensors to (default: CUDA if available).
+        logger (Logger, optional): Optional logger for info messages.
+
+    Returns:
+        dict[int, torch.Tensor]: Dictionary mapping label_id -> mean_spectrum [1, D].
+        torch.Tensor: All spectra concatenated [N, D].
+        torch.Tensor: All labels concatenated [N].
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    all_x, all_y = [], []
+
+    for batch in loader:
+        if isinstance(batch, (list, tuple)):
+            x, y = batch[0], batch[1]
+        else:
+            x, y = batch
+        all_x.append(x)
+        all_y.append(y)
+
+    X = torch.cat(all_x, dim=0).to(device)
+    y = torch.cat(all_y, dim=0).to(device)
+
+    unique_labels = torch.unique(y)
+    mean_spectra = {}
+
+    for label in unique_labels:
+        mask = (y == label)
+        mean_spec = X[mask].mean(dim=0, keepdim=True)
+        mean_spectra[int(label.item())] = mean_spec
+
+        if logger:
+            logger.info(f"Label {int(label.item())}: {mask.sum().item()} samples, mean spectrum shape {mean_spec.shape}")
+        else:
+            print(f"Label {int(label.item())}: {mask.sum().item()} samples, mean spectrum shape {mean_spec.shape}")
+
+    return mean_spectra, X, y
