@@ -5,10 +5,12 @@ import torch
 import json
 import logging
 import numpy as np
+import torch.nn as nn
 import matplotlib.pyplot as plt
 from datetime import datetime
+import torch.nn.functional as F
 
-from utils.visualization import save_training_curve, plot_nll_vs_kl
+from utils.visualization import save_training_curve, plot_nll_vs_kl, training_curve_gan
 from models.VAE import ConditionalVAE
 
 def setuplogging(name, mode, results_path):
@@ -47,6 +49,9 @@ def setup_train(config, logger):
     logger.info(f"\nInput dimension: {D}\nLatent dimension: {M}\nNumber of layers: {num_layers}\nLearning rate: {lr}\nMax epochs: {num_epochs}\nMax patience: {max_patience}\nBatch size: {batch_size}\nMax pool: {max_pool}")
 
     return D, M, num_layers, num_heads, lr, num_epochs, max_patience, batch_size, max_pool, encoder, decoder, model
+
+
+######## VAE TRAINING ########
 
 def run_experiment(model, train_loader, val_loader, test_loader, config, results_path, logger):
 
@@ -105,9 +110,6 @@ def run_experiment(model, train_loader, val_loader, test_loader, config, results
     logger.info(f"Test ELBO loss: {test_loss:.2f}, KL loss: {test_kl_loss:.2f}")
 
     return best_model, [nll_train, nll_val], val_loss, test_loss, metadata
-
-
-######## VAE TRAINING ########
 
 def training(max_patience, num_epochs, model, optimizer, training_loader, val_loader, scheduler=None, logger=None):
     nll_val = []
@@ -191,7 +193,6 @@ def evaluation(test_loader, model_best):
     loss /= N
     kl   /= N
     return loss, kl
-
 
 ######## CONDITIONAL VAE TRAINING ########
 
@@ -280,3 +281,258 @@ def evaluation_cond(test_loader, model_best):
     loss /= N
     kl   /= N
     return loss, kl
+
+
+
+######## GAN TRAINING ########
+
+def training_gan(train_loader, val_loader, generator, discriminator, criterion, optimizer_G, optimizer_D, device, config, scheduler=None, logger=None):
+    """
+    Train a GAN (both generator and discriminator) with early stopping based on validation loss.
+    Args:
+        train_loader (DataLoader): training dataloader.
+        val_loader (DataLoader): validation dataloader.
+        generator (nn.Module): generator model.
+        discriminator (nn.Module): discriminator model.
+        criterion (loss): typically nn.BCEWithLogitsLoss().
+        optimizer_G (torch.optim): optimizer for generator.
+        optimizer_D (torch.optim): optimizer for discriminator.
+        device (torch.device): cuda or cpu.
+        config (dict): training configuration with keys:
+            - 'latent_dim': dimension of latent noise vector.
+            - 'epochs': max number of epochs.
+            - 'max_patience': epochs to wait for improvement before stopping.
+        scheduler (torch.optim.lr_scheduler, optional): learning rate scheduler.
+        logger (logging.Logger, optional): logger for info messages.
+    Returns:
+        generator (nn.Module): trained generator model.
+        discriminator (nn.Module): trained discriminator model.
+        history (dict): training history with keys:
+            - "D_train": list of discriminator training losses
+            - "G_train": list of generator training losses
+            - "D_val": list of discriminator validation losses
+            - "G_val": list of generator validation losses
+    """
+    
+    best_val_loss = float('inf')
+    patience_counter = 0
+    max_patience = config.get('max_patience', 10)
+    history = {"D_train": [], "G_train": [], 
+               "D_val": [], "G_val": []}
+    
+
+    for epoch in range(config['epochs']):
+        epoch_d_loss = 0.0
+        epoch_g_loss = 0.0
+        num_batches = 0
+
+        for x_real in train_loader:
+            x_real = x_real.to(device)
+            batch_size = x_real.size(0)
+            valid = torch.ones(batch_size, 1).to(device)
+            fake = torch.zeros(batch_size, 1).to(device)
+
+            # Train Discriminator
+            z = torch.randn(batch_size, config['latent_dim']).to(device)
+            x_fake = generator(z).detach()
+            d_real = discriminator(x_real)
+            d_fake = discriminator(x_fake)
+            d_loss = criterion(d_real, valid) + criterion(d_fake, fake)
+
+            optimizer_D.zero_grad()
+            d_loss.backward()
+            optimizer_D.step()
+
+            # Train Generator
+            z = torch.randn(batch_size, config['latent_dim']).to(device)
+            x_gen = generator(z)
+            d_gen = discriminator(x_gen)
+            g_loss = criterion(d_gen, valid)
+
+            optimizer_G.zero_grad()
+            g_loss.backward()
+            optimizer_G.step()
+
+            # Accumulate losses
+            epoch_d_loss += d_loss.item()
+            epoch_g_loss += g_loss.item()
+            num_batches += 1
+
+        # Save average losses
+        avg_d_loss = epoch_d_loss / num_batches
+        avg_g_loss = epoch_g_loss / num_batches
+
+        # === VALIDATION ===
+        val_total, d_val, g_val = evaluation_gan(
+            loader=val_loader,
+            generator=generator,
+            discriminator=discriminator,
+            criterion=criterion,
+            latent_dim=config['latent_dim'],
+            device=device
+        )
+
+        history["D_train"].append(avg_d_loss)
+        history["G_train"].append(avg_g_loss)
+        history["D_val"].append(d_val)
+        history["G_val"].append(g_val)
+
+        logger.info(f"[Epoch {epoch+1}] "
+               f"Train D={avg_d_loss:.4f}, G={avg_g_loss:.4f} | "
+               f"Val D={d_val:.4f}, G={g_val:.4f}")
+
+        # === EARLY STOPPING ===
+        if val_total < best_val_loss:
+            best_val_loss = val_total
+            best_generator = generator.state_dict()
+            best_discriminator = discriminator.state_dict()
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= max_patience:
+                print(f"Early stopping at epoch {epoch+1}")
+                if logger:
+                    logger.info(f"Early stopping at epoch {epoch+1}")
+                break
+
+    # Load best model weights
+    generator.load_state_dict(best_generator)
+    discriminator.load_state_dict(best_discriminator)
+
+    return generator, discriminator, history
+
+def evaluation_gan(loader, generator, discriminator, criterion, latent_dim, device):
+    """
+    Evaluate a trained GAN (both discriminator and generator losses).
+
+    Args:
+        loader (DataLoader): validation or test dataloader.
+        generator (nn.Module): trained generator model.
+        discriminator (nn.Module): trained discriminator model.
+        criterion (loss): typically nn.BCEWithLogitsLoss().
+        latent_dim (int): dimension of latent noise vector.
+        device (torch.device): cuda or cpu.
+
+    Returns:
+        total_loss (float): sum of discriminator and generator losses.
+        d_loss_avg (float): average discriminator loss.
+        g_loss_avg (float): average generator loss.
+    """
+    generator.eval()
+    discriminator.eval()
+    d_loss_total, g_loss_total, n_batches = 0.0, 0.0, 0
+
+    with torch.no_grad():
+        for x_real in loader:
+            x_real = x_real.to(device)
+            batch_size = x_real.size(0)
+
+            # Ground truth labels
+            valid = torch.ones(batch_size, 1, device=device)
+            fake = torch.zeros(batch_size, 1, device=device)
+
+            # === Discriminator ===
+            # Real and fake data
+            z = torch.randn(batch_size, latent_dim, device=device)
+            x_fake = generator(z)
+
+            d_real = discriminator(x_real)
+            d_fake = discriminator(x_fake)
+
+            d_loss_real = criterion(d_real, valid)
+            d_loss_fake = criterion(d_fake, fake)
+            d_loss = d_loss_real + d_loss_fake
+
+            # === Generator ===
+            z = torch.randn(batch_size, latent_dim, device=device)
+            x_gen = generator(z)
+            d_gen = discriminator(x_gen)
+            g_loss = criterion(d_gen, valid)  # generator wants D to say "real"
+
+            d_loss_total += d_loss.item()
+            g_loss_total += g_loss.item()
+            n_batches += 1
+
+    d_loss_avg = d_loss_total / n_batches
+    g_loss_avg = g_loss_total / n_batches
+    total_loss = d_loss_avg + g_loss_avg
+
+    return total_loss, d_loss_avg, g_loss_avg
+
+def run_experiment_gan(generator, discriminator, loaders, device, config, results_path, logger):
+    """
+    Run a full GAN training experiment with training and evaluation.
+    Args:
+        generator (nn.Module): generator model.
+        discriminator (nn.Module): discriminator model.
+        loaders (tuple): (train_loader, val_loader, test_loader).
+        device (torch.device): cuda or cpu.
+        config (dict): training configuration with keys:
+            - 'latent_dim': dimension of latent noise vector.
+            - 'epochs': max number of epochs.
+            - 'pretrain_epochs': number of epochs to pretrain discriminator.
+            - 'lr_d': learning rate for discriminator.
+            - 'lr_g': learning rate for generator.
+            - 'max_patience': epochs to wait for improvement before stopping.
+        results_path (str): directory to save results.
+        logger (logging.Logger): logger for info messages.
+    Returns:
+        generator (nn.Module): trained generator model.
+        discriminator (nn.Module): trained discriminator model.
+        metadata (dict): training metadata including time and parameter counts.
+    """
+    
+    train_loader, val_loader, test_loader = loaders
+
+    logger.info("=" * 80)
+    logger.info(f"TRAINING...:")
+    logger.info("=" * 80)
+
+    criterion = nn.BCELoss()
+    optimizer_G = torch.optim.Adam(generator.parameters(), lr=config['lr_g'], betas=(0.5, 0.999))
+    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=config['lr_d'], betas=(0.5, 0.999))
+
+    t_start = time.time()
+    generator, discriminator, history = training_gan(
+        train_loader=train_loader,
+        val_loader = val_loader,
+        generator=generator,
+        discriminator=discriminator,
+        criterion=criterion,
+        optimizer_G=optimizer_G,
+        optimizer_D=optimizer_D,
+        device=device,
+        config=config,
+        scheduler=None,
+        logger=logger
+    )
+    training_time = time.time() - t_start
+
+    epochs_used = len(history["D_train"])
+    time_per_epoch = training_time / max(epochs_used, 1)
+    # Count parameters only for generator (or both if you want total)
+    num_params_G = sum(p.numel() for p in generator.parameters() if p.requires_grad)
+    num_params_D = sum(p.numel() for p in discriminator.parameters() if p.requires_grad)
+    
+    metadata = {
+        "training_time_sec": training_time,
+        "time_per_epoch_sec": time_per_epoch,
+        "epochs": epochs_used,
+        "num_params_G": num_params_G,
+        "num_params_D": num_params_D,
+        "total_params": num_params_G + num_params_D
+    }
+
+    training_curve_gan(history, results_path)
+
+    logger.info("=" * 80)
+    logger.info("EVALUATION")
+    logger.info("=" * 80)
+
+    val_loss, val_d, val_g = evaluation_gan(val_loader, generator, discriminator, criterion, config['latent_dim'], device)
+    logger.info(f"Validation loss: {val_loss:.4f} (D={val_d:.4f}, G={val_g:.4f})")
+
+    test_loss, test_d, test_g = evaluation_gan(test_loader, generator, discriminator, criterion, config['latent_dim'], device)
+    logger.info(f"Test loss: {test_loss:.4f} (D={test_d:.4f}, G={test_g:.4f})")
+
+    return generator, discriminator, metadata

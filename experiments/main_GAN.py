@@ -6,38 +6,34 @@ Evaluation can include generating spectra and testing with MARISMa 2024.
 
 """
 
-from json import decoder
 import os
 import sys
 import torch
 import argparse
 import yaml
+import time
 from pytorch_model_summary import summary
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models.GAN import Discriminator, GAN
-from models.VAE import BernoulliDecoder
-from models.Networks import MLPDecoder1D, MLPDiscriminator
-from dataloader.data import load_data, get_dataloaders
-from utils.training_utils import run_experiment, setuplogging, setup_train, evaluation
+from models.GAN import GenerationNetwork, Discriminator
+from dataloader.data import compute_mean_spectra_per_label, load_data, get_dataloaders
+from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan
+from utils.visualization import plot_gan_meanVSgenerated
 from utils.test_utils import write_metadata_csv
 
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--config', default='configs/gan_MLP3_8.yaml', type=str)
+    p.add_argument('--config', default='configs/gan_MLP3_32.yaml', type=str)
     p.add_argument('--train', action='store_true', default=False, help='Run training (default: only evaluation/visualization)')
     return p.parse_args()
 
 def main():
     args = parse_args()
-    args.train = True
     config = yaml.safe_load(open(args.config))
 
     metadata = config.get('metadata', {})
-    pretrained_generator = config.get('pretrained_generator', None)
-    pretrained_discriminator = config.get('pretrained_discriminator', None)
 
     # Logging
     name = args.config.split('/')[-1].split('.')[0]
@@ -46,8 +42,21 @@ def main():
     logger = setuplogging(name, mode, results_path)
     logger.info(f"Using config file: {args.config}")
 
-    # Config (reuse setup_train for consistency, even if not all args apply to GANs)
-    D, M, num_layers, num_heads, lr, num_epochs, max_patience, batch_size, max_pool, _, _, model = setup_train(config, logger)
+    # Hyperparameters
+    batch_size = config.get('batch_size', 128)
+    pretrained_generator = config.get('pretrained_generator', None)
+    pretrained_discriminator = config.get('pretrained_discriminator', None)
+    latent_dim = config.get('latent_dim', 32)
+    image_dim = config.get('input_dim', 6000)
+    num_epochs = config.get('epochs', 30)
+    batch_norm = config.get('batch_norm', False)
+    lr_g = config.get('lr_g', 2e-4)
+    lr_d = config.get('lr_d', 1e-4)
+    max_patience = config.get('max_patience', 10)
+
+    logger.info(f"TRAINING CONFIGURATION:")
+    logger.info("=" * 80)
+    logger.info(f"\nInput dimension: {image_dim}\nLatent dimension: {latent_dim}\nLearning rate (G): {lr_g}\nLearning rate (D): {lr_d}\nMax epochs: {num_epochs}\nMax patience: {max_patience}\nBatch size: {batch_size}\nBatch norm: {batch_norm}")
 
     # Data
     train, val, test, ood = load_data(config['pickle_marisma'], config['pickle_driams'], logger)
@@ -57,34 +66,26 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
 
-    dropout = config.get('use_dropout', True)
-    dropout_p = config.get('dropout_p', 0.3)
+    # Initialize models
+    generator = GenerationNetwork(latent_dim, image_dim, batch_norm).to(device)
+    discriminator = Discriminator(image_dim).to(device)
 
-    if config['arch_type'] == 'MLP':
-        decoder_net = MLPDecoder1D(M, num_layers, D).to(device)
-        discriminator_net = MLPDiscriminator(D, M, num_layers, dropout, dropout_p)
+    logger.info("\nGENERATOR:\n" + str(summary(generator, torch.zeros(1, latent_dim).to(device), show_input=False, show_hierarchical=False)))
+    logger.info("\nDISCRIMINATOR:\n" + str(summary(discriminator, torch.zeros(1, image_dim).to(device), show_input=False, show_hierarchical=False)))
 
-    
-    generator = BernoulliDecoder(decoder_net).to(device)
-    discriminator = Discriminator(discriminator_net).to(device)
-    logger.info("\nDECODER:\n" + str(summary(decoder_net, torch.zeros(1, M).to(device), show_input=False, show_hierarchical=False)))
-    logger.info("\nGENERATOR:\n" + str(summary(generator, torch.zeros(1, M).to(device), show_input=False, show_hierarchical=False)))
-    logger.info("\nDISCRIMINATOR:\n" + str(summary(discriminator, torch.zeros(1, D).to(device), show_input=False, show_hierarchical=False)))
-
-    if model == 'GAN':
-        model = GAN(generator, discriminator, M, lambda_g=1.0, lambda_d=1.0).to(device)
-    logger.info(f"Training {model.__class__.__name__}...")
 
     if args.train:
-        # Train the GAN
-        best_model, [nll_train, nll_val], val_loss, test_loss, metadata = run_experiment(model, train_loader, val_loader, test_loader, config, results_path, logger)
-        logger.info(f"Best {model.__class__.__name__} model obtained from training.")
-        
-        # Save best generator and discriminator
-        gen_path = os.path.join(results_path, f"best_generator_{name}.pt")
-        disc_path = os.path.join(results_path, f"best_discriminator_{name}.pt")
-        torch.save(best_model.generator.state_dict(), gen_path)
-        torch.save(best_model.discriminator.state_dict(), disc_path)
+        # Train the GAN using new GAN-specific experiment runner
+        loaders = train_loader, val_loader, test_loader
+        generator, discriminator, metadata = run_experiment_gan(generator, discriminator, loaders, device, config, results_path, logger)
+
+        # Save best models
+        gen_path = os.path.join(results_path, 'best_generator.pt')
+        disc_path = os.path.join(results_path, 'best_discriminator.pt')
+        torch.save(generator.state_dict(), gen_path)
+        torch.save(discriminator.state_dict(), disc_path)
+        logger.info(f"Saved best generator to {gen_path}")
+        logger.info(f"Saved best discriminator to {disc_path}")
 
         # Update config
         config['pretrained_generator'] = gen_path
@@ -95,22 +96,38 @@ def main():
 
     else:
         # Load the best model from a previous training
-        model.generator.load_state_dict(torch.load(pretrained_generator, map_location=device))
-        model.discriminator.load_state_dict(torch.load(pretrained_discriminator, map_location=device))
-        model = model.to(device)
+        if pretrained_generator is None or pretrained_discriminator is None:
+            raise ValueError("Pretrained model paths must be specified in the config for evaluation mode.")
+        generator.load_state_dict(torch.load(pretrained_generator, map_location=device))
+        discriminator.load_state_dict(torch.load(pretrained_discriminator, map_location=device))
         logger.info(f"Loaded pretrained generator from {pretrained_generator}")
         logger.info(f"Loaded pretrained discriminator from {pretrained_discriminator}")
 
+        criterion = torch.nn.BCELoss()
+        val_loss, val_d, val_g = evaluation_gan(val_loader, generator, discriminator, criterion, config['latent_dim'], device)
+        logger.info(f"Validation loss: {val_loss:.4f} (D={val_d:.4f}, G={val_g:.4f})")
 
-        logger.info("=" * 80)
-        logger.info(f"EVALUATION:")
-        logger.info("=" * 80)
+        test_loss, test_d, test_g = evaluation_gan(test_loader, generator, discriminator, criterion, config['latent_dim'], device)
+        logger.info(f"Test loss: {test_loss:.4f} (D={test_d:.4f}, G={test_g:.4f})")
 
-        # Example: Generate samples for visualization
-        # z = torch.randn(16, M).to(device)
-        # fake_spectra = best_model.generator(z).detach().cpu()
-        # plot_generated_spectra(fake_spectra, results_path, "generated_samples")
+    # Generate and plot spectra with respect to the TRAINING SET
+    mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device, logger)
 
+
+    n_samples = 6
+    z = torch.randn(n_samples, latent_dim).to(device)
+    gen_times = []
+    with torch.no_grad():
+        for i in range(n_samples):
+            start = time.time()
+            sample = generator(z[i].unsqueeze(0)).cpu()  # [1, image_dim], already passed through sigmoid in generator
+            end = time.time()
+            gen_times.append(end - start)
+            saving_path = os.path.join(results_path, 'plots', f'GAN_generated_spectrum_{i+1}.png')
+            plot_gan_meanVSgenerated(mean_spectra_train, sample, saving_path)
+    avg_gen_time = sum(gen_times) / n_samples
+    metadata['avg_generation_time'] = avg_gen_time
+    logger.info(f"Average generation time per spectrum: {avg_gen_time:.6f} sec")
 
     # Update metadata and save to config
     config['metadata'] = metadata

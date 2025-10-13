@@ -6,105 +6,89 @@ from utils.conditional_utils import get_condition, impute_missing_labels, comput
 
 ############### GAN ###############
 
-class Discriminator(nn.Module):
-    def __init__(self, discriminator_net):
-        """
-        Discriminador clásico que recibe x y devuelve logits de real/fake.
-        
-        Args:
-            discriminator_net: red base (MLP o CNN) que produce un escalar por input.
-        """
+# Generation Network (p_theta)
+class GenerationNetwork(nn.Module):
+    def __init__(self, latent_dim, image_dim, bn = False):
         super().__init__()
-        self.discriminator = discriminator_net
-    
+        self.fc1 = nn.Linear(latent_dim, 256)
+        self.bn1 = nn.BatchNorm1d(256) if bn else None
+        self.fc2 = nn.Linear(256, 512)
+        self.bn2 = nn.BatchNorm1d(512) if bn else None
+        self.fc3 = nn.Linear(512, 1024)
+        self.bn3 = nn.BatchNorm1d(1024) if bn else None
+        self.fc_out = nn.Linear(1024, image_dim)
+
+    def forward(self, z):
+        h = F.relu(self.fc1(z))
+        h = self.bn1(h) if self.bn1 else h
+        h = F.relu(self.fc2(h))
+        h = self.bn2(h) if self.bn2 else h
+        h = F.relu(self.fc3(h))
+        h = self.bn3(h) if self.bn3 else h
+        return torch.sigmoid(self.fc_out(h))  # spectra in [0,1]
+
+
+# Discriminator: D(x, y)
+class Discriminator(nn.Module):
+    def __init__(self, image_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(image_dim, 1024)
+        self.fc2 = nn.Linear(1024, 512)
+        self.fc3 = nn.Linear(512, 256)
+        self.fc_out = nn.Linear(256, 1)
+
     def forward(self, x):
+        h = F.leaky_relu(self.fc1(x), 0.2)
+        h = F.leaky_relu(self.fc2(h), 0.2)
+        h = F.leaky_relu(self.fc3(h), 0.2)
+        return torch.sigmoid(self.fc_out(h))
+
+class ConvDiscriminator(nn.Module):
+    def __init__(self, y_embed_dim, label2_dim, img_shape, disc_hidden):
+        super().__init__()
+        self.img_shape = img_shape
+        
+        # Parte convolucional para procesar la imagen
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, 32, 4, stride=2, padding=1), nn.LeakyReLU(0.2),
+            nn.Conv2d(32, 64, 4, stride=2, padding=1), nn.LeakyReLU(0.2),
+            nn.Dropout2d(0.25),  # Regularización espacial
+            nn.Conv2d(64, 128, 4, stride=2, padding=1), nn.LeakyReLU(0.2),
+            nn.Conv2d(128, 256, 4, stride=2, padding=1), nn.LeakyReLU(0.2),
+            nn.Dropout2d(0.25),
+            nn.Flatten()
+        )
+        
+        # Calcular dimensión después de convoluciones
+        conv_out_dim = (img_shape[1] // 16) * (img_shape[2] // 16) * 256
+        
+        # Parte fully connected que combina features conv + condición
+        self.fc = nn.Sequential(
+            nn.Linear(conv_out_dim + y_embed_dim + label2_dim, disc_hidden), nn.LeakyReLU(0.2),
+            nn.Dropout(0.3),
+            nn.Linear(disc_hidden, 256), nn.LeakyReLU(0.2),
+            nn.Dropout(0.2),
+            nn.Linear(256, 1)  # Salida escalar: logits real/fake
+        )
+    
+    def forward(self, x, cond):
         """
         Args:
-            x: tensor [batch, input_dim] datos reales o generados
-        
+            x: tensor [batch, D] imágenes flatten (reales o generadas)
+            cond: tensor [batch, cond_dim] condición (de get_condition)
         Returns:
             logits: tensor [batch, 1] logits de probabilidad real/fake
         """
-        logits = self.discriminator(x)
-        return logits
-
-
-class GAN(nn.Module):
-    def __init__(self, generator, discriminator, latent_dim=128, lambda_g=1.0, lambda_d=1.0):
-        """
-        GAN no-condicional clásica.
+        # Reshape a imagen 2D para convoluciones
+        x_img = x.view(-1, 1, self.img_shape[1], self.img_shape[2])
         
-        Args:
-            generator: red generadora que recibe ruido y produce espectros
-            discriminator: red discriminadora
-            latent_dim: dimensión del espacio latente para el ruido
-            lambda_g: peso para la pérdida del generador
-            lambda_d: peso para la pérdida del discriminador
-        """
-        super().__init__()
-        self.generator = generator
-        self.discriminator = discriminator
-        self.latent_dim = latent_dim
-        self.lambda_g = lambda_g
-        self.lambda_d = lambda_d
-    
-    def forward(self, x_real):
-        """
-        Forward pass que calcula ambas pérdidas (discriminador + generador).
+        # Extraer features convolucionales
+        conv_features = self.conv(x_img)
         
-        Args:
-            x_real: tensor [batch, input_dim] datos reales
+        # Combinar con condición
+        h = torch.cat([conv_features, cond], dim=1)
         
-        Returns:
-            total_loss: pérdida total
-            d_loss: pérdida del discriminador
-            g_loss: pérdida del generador
-        """
-        batch_size = x_real.size(0)
-
-        # === PÉRDIDA DEL DISCRIMINADOR ===
-        # 1. Discriminador en datos reales
-        real_logits = self.discriminator(x_real)
-        real_loss = F.binary_cross_entropy_with_logits(
-            real_logits, torch.ones_like(real_logits)
-        )
-        
-        # 2. Generar datos fake
-        noise = torch.randn(batch_size, self.latent_dim, device=x_real.device)
-        x_fake = self.generator(noise)
-        
-        # 3. Discriminador en datos fake
-        fake_logits_d = self.discriminator(x_fake.detach())
-        fake_loss = F.binary_cross_entropy_with_logits(
-            fake_logits_d, torch.zeros_like(fake_logits_d)
-        )
-        
-        d_loss = real_loss + fake_loss
-        
-        # === PÉRDIDA DEL GENERADOR ===
-        fake_logits_g = self.discriminator(x_fake)  # ahora sí se propaga a G
-        g_loss = F.binary_cross_entropy_with_logits(
-            fake_logits_g, torch.ones_like(fake_logits_g)
-        )
-        
-        # === PÉRDIDA TOTAL ===
-        total_loss = self.lambda_d * d_loss + self.lambda_g * g_loss
-        
-        return total_loss, d_loss, g_loss
-    
-    def sample(self, batch_size=64, device="cpu"):
-        """
-        Generar muestras no-condicionales
-        
-        Args:
-            batch_size: número de muestras
-            device: dispositivo
-        Returns:
-            x_fake: tensor [batch, input_dim] muestras generadas
-        """
-        noise = torch.randn(batch_size, self.latent_dim, device=device)
-        x_fake = self.generator(noise)
-        return x_fake
+        return self.fc(h)
 
 
 
@@ -168,8 +152,9 @@ class ConditionalGAN(nn.Module):
         # === PÉRDIDA DEL DISCRIMINADOR ===
         # 1. Discriminador en datos reales
         real_logits = self.discriminator(x_real, cond)
-        real_loss = F.binary_cross_entropy_with_logits(
-            real_logits, torch.ones_like(real_logits)
+        real_probs = torch.sigmoid(real_logits)
+        real_loss = F.binary_cross_entropy(
+            real_probs, torch.ones_like(real_probs)
         )
         
         # 2. Generar datos fake
@@ -178,8 +163,9 @@ class ConditionalGAN(nn.Module):
         
         # 3. Discriminador en datos fake (para pérdida de D)
         fake_logits_d = self.discriminator(x_fake.detach(), cond)  # detach() para no actualizar G
-        fake_loss = F.binary_cross_entropy_with_logits(
-            fake_logits_d, torch.zeros_like(fake_logits_d)
+        fake_probs_d = torch.sigmoid(fake_logits_d)
+        fake_loss = F.binary_cross_entropy(
+            fake_probs_d, torch.zeros_like(fake_probs_d)
         )
         
         d_loss = real_loss + fake_loss
@@ -187,8 +173,9 @@ class ConditionalGAN(nn.Module):
         # === PÉRDIDA DEL GENERADOR ===
         # 4. Discriminador en datos fake (para pérdida de G)
         fake_logits_g = self.discriminator(x_fake, cond)  # sin detach() para actualizar G
-        g_loss = F.binary_cross_entropy_with_logits(
-            fake_logits_g, torch.ones_like(fake_logits_g)  # G quiere engañar a D
+        fake_probs_g = torch.sigmoid(fake_logits_g)
+        g_loss = F.binary_cross_entropy(
+            fake_probs_g, torch.ones_like(fake_probs_g)  # G quiere engañar a D
         )
         
         # === PÉRDIDA TOTAL ===
