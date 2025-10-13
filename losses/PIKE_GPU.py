@@ -1,5 +1,8 @@
 import torch
 import math
+import numpy as np
+import os
+import csv
 
 class PIKE_GPU:
     def __init__(self, t=8):
@@ -69,3 +72,67 @@ def calculate_PIKE_gpu(x, x_hat, t=8):
     _, K_x_xhat = pike(X_mz, X_i, X_mz, Xhat_i)
     norm_pike = K_x_xhat / torch.sqrt(K_x_x * K_xhat_xhat)
     return norm_pike.item()
+
+def calculate_pike_matrix(generated_spectra, mean_spectra_test, label_correspondence, device, results_path=None, saving=True):
+    """
+    Calculate PIKE to all class means for each generated spectrum in generated_spectra.
+    Args:
+        generated_spectra: dict {label_name: np.ndarray or tensor of generated spectra}
+        mean_spectra_test: dict {label_name: mean spectrum tensor}
+        device: torch.device
+        results_path: path to save CSV
+        saving: whether to save CSV
+    Returns: all_pike_per_class
+    """
+    all_pike_per_class = {}
+    with torch.no_grad():
+        for label_name, spectra in generated_spectra.items():
+            # spectra: [n_generate, D] (np.ndarray or tensor)
+            spectra = spectra.to(device)
+            mean_spectra_all = {lab: mean_spectra_test[lab].to(device).squeeze() for lab in mean_spectra_test}
+            pike_per_class = []
+            for i in range(spectra.shape[0]):
+                x_i_tensor = spectra[i]
+                pike_dict = {}
+                for other_lab, mean_spec in mean_spectra_all.items():
+                    pike_to_other = calculate_PIKE_gpu(x_i_tensor, mean_spec)
+                    pike_dict[other_lab] = pike_to_other
+                pike_per_class.append(pike_dict)
+            for idx, pike_dict in enumerate(pike_per_class):
+                for other_lab, val in pike_dict.items():
+                    key = (label_name, other_lab)
+                    if key not in all_pike_per_class:
+                        all_pike_per_class[key] = []
+                    all_pike_per_class[key].append(val)
+    # Save matrix if requested
+    if saving and results_path is not None:
+        row_labels = sorted(set(gen for (gen, _) in all_pike_per_class.keys()))
+        col_labels = sorted(set(mean for (_, mean) in all_pike_per_class.keys()))
+        label_id_to_name = {str(k): v for k, v in label_correspondence.items()} if isinstance(label_correspondence, dict) else None
+        def col_label_str(lab):
+            if label_id_to_name and str(lab) in label_id_to_name:
+                return f"mean_{label_id_to_name[str(lab)]}"
+            else:
+                return f"mean_{lab}"
+        matrix = []
+        for gen_label in row_labels:
+            row = []
+            for mean_label in col_labels:
+                key = (gen_label, mean_label)
+                if key in all_pike_per_class:
+                    values_np = np.array([v.item() if hasattr(v, 'item') else float(v) for v in all_pike_per_class[key]])
+                    mean = np.mean(values_np)
+                    std = np.std(values_np)
+                    cell = f"{mean:.3f}±{std:.3f}"
+                else:
+                    cell = ""
+                row.append(cell)
+            matrix.append(row)
+        pike_csv_path = os.path.join(results_path, 'all_labels_pike_matrix.csv')
+        with open(pike_csv_path, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["label"] + [col_label_str(lab) for lab in col_labels])
+            for i, gen_label in enumerate(row_labels):
+                writer.writerow([gen_label] + matrix[i])
+        print(f"Saved PIKE matrix to {pike_csv_path}")
+    return all_pike_per_class
