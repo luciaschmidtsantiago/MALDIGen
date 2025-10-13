@@ -227,6 +227,26 @@ class ConditionalVAE(nn.Module):
         z = mu_p + std * eps
         return self.decoder.sample(z, y_species, y_amr)
     
+# Utility: Generate n_samples per label from a ConditionalVAE
+def generate_spectra_per_label(model, label_correspondence, n_samples, device=None):
+    """
+    Generate n_samples spectra for each label using a ConditionalVAE.
+    Args:
+        model: Trained ConditionalVAE (must be in eval mode).
+        label_correspondence: dict mapping label indices to label names (or vice versa).
+        n_samples: Number of spectra to generate per label.
+        device: torch.device (optional, will use model's device if None).
+    Returns:
+        dict: {label_name: tensor of generated spectra}
+    """
+    model.eval()
+    device = device or next(model.parameters()).device
+    results = {}
+    for idx, label_name in label_correspondence.items():
+        y_species = torch.full((n_samples,), idx, dtype=torch.long, device=device)
+        generated = model.sample(y_species)
+        results[label_name] = generated
+    return results
 
 ################ Semi-supervised Conditional VAE ###############
 class SemisupervisedConditionalVAE(ConditionalVAE):
