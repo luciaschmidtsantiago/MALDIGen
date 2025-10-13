@@ -71,7 +71,7 @@ def main():
     # Set up model
     if encoder == 'MLPEncoder1D':
         encoder = MLPEncoder1D(D, num_layers, M, cond_dim=cond_dim).to(device)
-        logger.info("\nENCODER:\n" + str(summary(encoder, torch.zeros(1, D + cond_dim).to(device), show_input=False, show_hierarchical=False)))
+        # logger.info("\nENCODER:\n" + str(summary(encoder, torch.zeros(1, D + cond_dim).to(device), show_input=False, show_hierarchical=False)))
     elif encoder == 'CNNEncoder1D':
         encoder = CNNEncoder1D(M, (1, D), num_layers=num_layers, max_pool=max_pool, cond_dim=cond_dim).to(device)
         #logger.info("\nENCODER:\n" + str(summary(encoder, torch.zeros(1, D).to(device), show_input=False, show_hierarchical=False)))
@@ -81,10 +81,10 @@ def main():
 
     if decoder == 'MLPDecoder1D':
         decoder = MLPDecoder1D(M, num_layers, D, cond_dim=cond_dim).to(device)
-        logger.info("\nDECODER:\n" + str(summary(decoder, torch.zeros(1, M + cond_dim).to(device), show_input=False, show_hierarchical=False)))
+        #logger.info("\nDECODER:\n" + str(summary(decoder, torch.zeros(1, M + cond_dim).to(device), show_input=False, show_hierarchical=False)))
     elif decoder == 'CNNDecoder1D':
         decoder = CNNDecoder1D(M, (1, D), num_layers=num_layers, max_pool=max_pool, cond_dim=cond_dim).to(device)
-        logger.info("\nDECODER:\n" + str(summary(decoder, torch.zeros(1, M + cond_dim).to(device), show_input=False, show_hierarchical=False)))
+        #logger.info("\nDECODER:\n" + str(summary(decoder, torch.zeros(1, M + cond_dim).to(device), show_input=False, show_hierarchical=False)))
     elif decoder == 'CNNAttenDecoder':
         decoder = CNNAttenDecoder(D, M, num_heads, num_layers).to(device)
 
