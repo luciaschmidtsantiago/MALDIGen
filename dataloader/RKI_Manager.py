@@ -225,10 +225,10 @@ class RKI(Dataset):
                         for fid_path in fid_paths:
                             self.samples.append({
                                 'fid': fid_path,
-                                'label': f"{genus}_{species}",
+                                'label': f"{genus}_{species.capitalize()}",
                                 'meta': {
                                     'genus': genus,
-                                    'species': species,
+                                    'species': species.capitalize(),
                                     'study': study,
                                     'messung': messung
                                 }

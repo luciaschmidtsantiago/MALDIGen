@@ -103,32 +103,21 @@ spectra = []
 labels = []
 metas = []
 
-
-
-# Helper to capitalize genus and species in meta only
-def capitalize_meta(meta):
-    meta = dict(meta)  # copy to avoid mutating original
-    if 'genus' in meta:
-        meta['genus'] = meta['genus'].capitalize()
-    if 'species' in meta:
-        meta['species'] = meta['species'].capitalize()
-    return meta
-
 # Process main species
 logger.info("Processing main species spectra...")
 for i in tqdm(range(len(species_dataset)), desc="Extracting main species"):
     spectrum_obj, label, meta = species_dataset[i]  # __getitem__ is called here
     spectra.append(spectrum_obj.intensity)  # get the intensity array
-    labels.append(label.capitalize())  # Capitalize label
-    metas.append(capitalize_meta(meta))
+    labels.append(label)  # Capitalize label
+    metas.append(meta)
 
 # Process Enterobacter species and relabel them as "enterobacter_cloacae_complex"
 logger.info("Processing Enterobacter species spectra...")
 for i in tqdm(range(len(enterobacter_dataset)), desc="Extracting Enterobacter species"):
     spectrum_obj, label, meta = enterobacter_dataset[i]  # __getitem__ is called here
     spectra.append(spectrum_obj.intensity)  # get the intensity array
-    labels.append("enterobacter_cloacae_complex")  # Relabel all Enterobacter species, lower case
-    metas.append(capitalize_meta(meta))
+    labels.append("Enterobacter_cloacae_complex")  # Relabel all Enterobacter species, lower case
+    metas.append(meta)
 
 # Convert to numpy arrays
 data = np.stack(spectra)   # shape: (N_samples, N_features)
