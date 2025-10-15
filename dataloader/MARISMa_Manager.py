@@ -11,7 +11,7 @@ from utils.visualization_old import visualize_preprocessing
 
 class MARISMaManager:
 
-    def __init__(self, root_dir, presaved=False, pickel_path=None):
+    def __init__(self, root_dir, presaved=False, pickle_path=None):
         """
         Initializes the MARISMaManager.
         - root_dir: Root path of the MALDIMarañon dataset.
@@ -23,13 +23,13 @@ class MARISMaManager:
             self._load_structure()
 
         else:
-            if pickel_path is None:
+            if pickle_path is None:
                 raise ValueError("Pickle path must be provided if presaved is True.")
-            if not os.path.exists(pickel_path):
-                raise FileNotFoundError(f"Pickle file {pickel_path} does not exist.")
+            if not os.path.exists(pickle_path):
+                raise FileNotFoundError(f"Pickle file {pickle_path} does not exist.")
             # Load the spectra_dict from the pickle file
             self.spectra_dict = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(list))))
-            self.load_from_pickle(pickel_path)
+            self.load_from_pickle(pickle_path)
         
         self.stats = self.compute_statistics()  # Precompute statistics
 
