@@ -89,6 +89,10 @@ def plot_tsne_flexible(embeddings, meta, color_by='domain',
     # Use fixed color map for label/species
     use_fixed = color_by.lower() in ['label', 'species']
     plt.figure(figsize=(10, 8))
+    # Set axis limits to global min/max of embeddings
+    pad = 10
+    xlim = (embeddings[:, 0].min() - pad, embeddings[:, 0].max() + pad)
+    ylim = (embeddings[:, 1].min() - pad, embeddings[:, 1].max() + pad)
     # Use domain for marker if available
     meta_domains = np.array([m.get('domain', None) for m in filtered_meta])
     for i, val in enumerate(unique_values):
@@ -110,6 +114,8 @@ def plot_tsne_flexible(embeddings, meta, color_by='domain',
                 color = cm.nipy_spectral(i / max(1, len(unique_values)-1))
         plt.scatter(filtered_embeddings[idxs, 0], filtered_embeddings[idxs, 1],
                     label=str(val), color=color, marker=marker, alpha=0.6, s=10)
+    plt.xlim(xlim)
+    plt.ylim(ylim)
     plt.legend(markerscale=2, bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.xlabel("t-SNE 1")
     plt.ylabel("t-SNE 2")
@@ -174,6 +180,10 @@ def plot_tsne_flexible_color_shape(embeddings, meta, color_by='year', shape_by='
             else:
                 color_map[color] = cm.nipy_spectral(i / max(1, len(unique_colors)-1))
     plt.figure(figsize=(11, 9))
+    # Set axis limits to global min/max of embeddings
+    pad = 10
+    xlim = (embeddings[:, 0].min() - pad, embeddings[:, 0].max() + pad)
+    ylim = (embeddings[:, 1].min() - pad, embeddings[:, 1].max() + pad)
     for shape in unique_shapes:
         for color in unique_colors:
             idxs = (shape_values == shape) & (color_values == color)
@@ -183,6 +193,8 @@ def plot_tsne_flexible_color_shape(embeddings, meta, color_by='year', shape_by='
                             color=color_map[color],
                             marker=shape_map[shape],
                             alpha=0.7, s=18)
+    plt.xlim(xlim)
+    plt.ylim(ylim)
     plt.xlabel("t-SNE 1")
     plt.ylabel("t-SNE 2")
     if title:
@@ -318,11 +330,19 @@ def plot_tsne_custom_groups(embeddings, meta, save_prefix="groups"):
     group = []
     for m in meta_arr:
         d = m.get('domain', '')
+        h = m.get('hospital', '')
         y = int(m.get('year', 0)) if 'year' in m else None
-        if d.startswith('DRIAMS_A') or d.startswith('DRIAMS_B') or (d == 'MARISMa' and y is not None and y <= 2022):
+        # DRIAMS group by hospital
+        if d == 'DRIAMS' and h == 'DRIAMS_A':
             group.append('train')
-        elif d.startswith('DRIAMS_C') or d.startswith('DRIAMS_D'):
+        elif d == 'DRIAMS' and h == 'DRIAMS_B':
+            group.append('train')
+        elif d == 'DRIAMS' and h == 'DRIAMS_C':
             group.append('ood')
+        elif d == 'DRIAMS' and h == 'DRIAMS_D':
+            group.append('ood')
+        elif d == 'MARISMa' and y is not None and y <= 2022:
+            group.append('train')
         elif d == 'MARISMa' and y == 2023:
             group.append('val')
         elif d == 'MARISMa' and y == 2024:
@@ -333,20 +353,41 @@ def plot_tsne_custom_groups(embeddings, meta, save_prefix="groups"):
     color_map = {'train': 'blue', 'ood': 'red', 'val': 'green', 'test': 'yellow'}
     # Get domain for marker
     domains = np.array([m.get('domain', None) for m in meta_arr])
-    years = np.array([int(m.get('year', 0)) if 'year' in m else 0 for m in meta_arr])
     # Helper to plot a group list in order
-    def plot_groups(ax, group_order, alpha=0.7):
+    def plot_groups(ax, group_order, alpha=0.7, plot_val_test_last=False):
+        # If plot_val_test_last, plot val/test after all others so they are on top
+        already_plotted = set()
         for g in group_order:
+            if g == 'other':
+                continue
+            if plot_val_test_last and g in ('val', 'test'):
+                continue
             idxs = group == g
             for dom in np.unique(domains[idxs]):
                 dom_idxs = idxs & (domains == dom)
                 marker = DOMAIN_TO_MARKER.get(dom, 'o')
                 ax.scatter(embeddings[dom_idxs, 0], embeddings[dom_idxs, 1],
                            c=color_map[g], marker=marker, label=f"{g} | {dom}", alpha=alpha, s=10)
+                already_plotted.add((g, dom))
+        # Now plot val/test if needed
+        if plot_val_test_last:
+            for g in ('val', 'test'):
+                if g == 'other':
+                    continue
+                idxs = group == g
+                for dom in np.unique(domains[idxs]):
+                    dom_idxs = idxs & (domains == dom)
+                    marker = DOMAIN_TO_MARKER.get(dom, 'o')
+                    ax.scatter(embeddings[dom_idxs, 0], embeddings[dom_idxs, 1],
+                               c=color_map[g], marker=marker, label=f"{g} | {dom}", alpha=alpha, s=10)
+    # Get global axis limits for all embeddings
+    pad = 10
+    xlim = (embeddings[:, 0].min() - pad, embeddings[:, 0].max() + pad)
+    ylim = (embeddings[:, 1].min() - pad, embeddings[:, 1].max() + pad)
     # 1. Only train and OOD
     fig, axs = plt.subplots(1, 2, figsize=(14, 6))
     # Right: train on top
-    plot_groups(axs[1], ['ood', 'train'], alpha=0.4)  # OOD first (bottom), then train (top)
+    plot_groups(axs[1], ['ood', 'train'], alpha=0.4)
     plot_groups(axs[1], ['train'], alpha=0.8)
     axs[1].set_title("Right: Train (top), OOD (bottom)")
     # Left: OOD on top
@@ -356,23 +397,30 @@ def plot_tsne_custom_groups(embeddings, meta, save_prefix="groups"):
     for ax in axs:
         ax.set_xlabel("t-SNE 1")
         ax.set_ylabel("t-SNE 2")
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
         ax.legend(markerscale=2, bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
     plt.tight_layout()
     plt.savefig(f"{save_prefix}_train_ood.png", dpi=300)
     plt.close()
-    # 2. Add val and test
+    # 2. Add val and test (plot val/test last so they are on top)
     fig, axs = plt.subplots(1, 2, figsize=(14, 6))
     # Right: train, val, test, ood (train on top)
-    plot_groups(axs[1], ['ood', 'val', 'test', 'train'], alpha=0.3)
-    plot_groups(axs[1], ['train'], alpha=0.8)
+    plot_groups(axs[1], ['ood', 'train'], alpha=0.3, plot_val_test_last=True)
+    plot_groups(axs[1], ['train'], alpha=0.8, plot_val_test_last=True)
+    # Now plot val/test last
+    plot_groups(axs[1], ['val', 'test'], alpha=0.9, plot_val_test_last=False)
     axs[1].set_title("Right: Train (top), OOD/Val/Test (bottom)")
-    # Left: ood, val, test, train (ood on top)
-    plot_groups(axs[0], ['train', 'val', 'test', 'ood'], alpha=0.3)
-    plot_groups(axs[0], ['ood'], alpha=0.8)
+    # Left: ood, train, val, test (ood on top)
+    plot_groups(axs[0], ['train', 'ood'], alpha=0.3, plot_val_test_last=True)
+    plot_groups(axs[0], ['ood'], alpha=0.8, plot_val_test_last=True)
+    plot_groups(axs[0], ['val', 'test'], alpha=0.9, plot_val_test_last=False)
     axs[0].set_title("Left: OOD (top), Train/Val/Test (bottom)")
     for ax in axs:
         ax.set_xlabel("t-SNE 1")
         ax.set_ylabel("t-SNE 2")
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
         ax.legend(markerscale=2, bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
     plt.tight_layout()
     plt.savefig(f"{save_prefix}_train_ood_val_test.png", dpi=300)
@@ -380,7 +428,7 @@ def plot_tsne_custom_groups(embeddings, meta, save_prefix="groups"):
 
 def main():
 
-    tsne = True
+    tsne = False
 
     presaved_2D = os.path.join(os.path.dirname(__file__), 'tsne', "tsne_all_spectra_2d.npz")
 
