@@ -57,7 +57,7 @@ def main():
 
     logger.info(f"TRAINING CONFIGURATION:")
     logger.info("=" * 80)
-    logger.info(f"\nInput dimension: {image_dim}\nLatent dimension: {latent_dim}\nLearning rate (G): {lr_g}\nLearning rate (D): {lr_d}\nMax epochs: {num_epochs}\nMax patience: {max_patience}\nBatch size: {batch_size}\nBatch norm: {batch_norm}")
+    logger.info(f"\nInput dimension: {image_dim}\nLatent dimension: {latent_dim}\nLearning rate (G): {lr_g}\nLearning rate (D): {lr_d}\nMax epochs: {num_epochs}\nMax patience: {max_patience}\nBatch size: {batch_size}\nBatch norm: {batch_norm}\nNumber of layers: {num_layers}")
 
     # Data
     train, val, test, ood = load_data(config['pickle_marisma'], config['pickle_driams'], logger, get_labels=True)
@@ -73,7 +73,7 @@ def main():
     if gen_arch == 'MLP':
         generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=0, use_bn=batch_norm).to(device)
     elif gen_arch == 'CNN':
-        generator = CNNDecoder1D_Generator(latent_dim, image_dim, num_layers, base_channels=32, max_pool=False, cond_dim=0).to(device)
+        generator = CNNDecoder1D_Generator(latent_dim, image_dim, num_layers=num_layers, use_bn=batch_norm).to(device)
     discriminator = Discriminator(image_dim).to(device)
 
     logger.info("\nGENERATOR:\n" + str(summary(generator, torch.zeros(1, latent_dim).to(device), show_input=False, show_hierarchical=False)))

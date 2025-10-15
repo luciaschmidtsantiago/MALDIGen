@@ -52,81 +52,81 @@ class MLPDecoder1D_Generator(nn.Module):
 
 class CNNDecoder1D_Generator(nn.Module):
     """
-    Flexible 1D CNN generator (decoder) with optional conditioning, inspired by MLPDecoder1D_Generator and CNNDecoder1D.
+    Improved 1D CNN generator (decoder) for GANs.
+    - Starts from a small learned feature map instead of huge FC expansion.
+    - Upsamples progressively to reach the target length.
+    - Optional conditioning and BatchNorm for stable training.
+
     Args:
-        latent_dim (int): Dimension of the latent noise vector.
-        img_shape (tuple): Shape of the output (channels, length).
+        latent_dim (int): Dimension of the latent noise vector (e.g. 32).
+        output_dim (int): Final output length (e.g. 6000).
+        base_channels (int): Base number of channels for the first conv feature map.
         num_layers (int): Number of upsampling layers.
-        base_channels (int): Number of base channels for upsampling.
-        max_pool (bool): Whether to simulate max pooling in upsampling structure.
-        cond_dim (int): Dimension of conditional vector (0 for unconditional).
+        cond_dim (int): Optional conditioning dimension (default 0).
+        use_bn (bool): Whether to use BatchNorm1d (default True).
     """
-    def __init__(self, latent_dim, in_dim, num_layers=3, base_channels=32, max_pool=False, cond_dim=0):
+    def __init__(self, latent_dim, output_dim, num_layers=4, base_channels=128, cond_dim=0, use_bn=True):
         super().__init__()
-        self.in_dim = in_dim
-        self.num_layers = num_layers
-        self.base_channels = base_channels
-        self.max_pool = max_pool
+        self.latent_dim = latent_dim
+        self.output_dim = output_dim
         self.cond_dim = cond_dim
+        self.use_bn = use_bn
 
-        # Compute upsampling structure to determine final channels and length
-        length = in_dim
-        channels = base_channels
-        pool_count = 0
-        for i in range(num_layers):
-            length = (length + 2 * 1 - 4) // 2 + 1
-            channels *= 2
-            if max_pool and (i + 1) % 2 == 0 and i != num_layers - 1:
-                length = (length - 2) // 2 + 1
-                pool_count += 1
-        channels = channels // 2
-        self._final_channels = channels
-        self._final_length = length
+        # Starting feature map dimensions (length small, upsample progressively)
+        self.init_length = output_dim // (2 ** num_layers)  # e.g. 6000 / 16 = 375
+        self.init_channels = base_channels  # e.g. 128
 
-        # Fully connected expansion
-        fc_hidden = [4 * latent_dim * (2 ** i) for i in range(num_layers)]
-        fc_layers = []
-        fc_in_dim = latent_dim + cond_dim
-        for out_dim in fc_hidden:
-            fc_layers.append(nn.Linear(fc_in_dim, out_dim))
-            fc_layers.append(nn.LeakyReLU())
-            fc_in_dim = out_dim
-        fc_layers.append(nn.Linear(fc_in_dim, self._final_channels * self._final_length))
-        fc_layers.append(nn.LeakyReLU())
-        self.fc = nn.Sequential(*fc_layers)
+        # Fully connected: latent → feature map
+        self.fc = nn.Sequential(
+            nn.Linear(latent_dim + cond_dim, self.init_channels * self.init_length),
+            nn.LeakyReLU(0.2)
+        )
 
-        # Deconvolutional upsampling
-        num_upsamples = num_layers + pool_count
-        deconv_layers = []
-        in_channels = self._final_channels
-        out_channels = in_channels // 2
-        for i in range(num_upsamples - 1):
-            deconv_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
-            deconv_layers.append(nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1))
-            deconv_layers.append(nn.LeakyReLU())
-            in_channels = out_channels
-            out_channels = max(1, in_channels // 2)
-        deconv_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
-        deconv_layers.append(nn.Conv1d(in_channels, 1, kernel_size=3, padding=1))
-        deconv_layers.append(nn.Sigmoid())  # Output normalized to [0,1]
-        self.deconv = nn.Sequential(*deconv_layers)
+        # Build the upsampling Conv1D stack
+        layers = []
+        in_ch = self.init_channels
+        for i in range(num_layers - 1):
+            out_ch = max(in_ch // 2, 8)
+            layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
+            layers.append(nn.Conv1d(in_ch, out_ch, kernel_size=5, padding=2))
+            if self.use_bn:
+                layers.append(nn.BatchNorm1d(out_ch))
+            layers.append(nn.LeakyReLU(0.2))
+            in_ch = out_ch
+
+        # Final upsample to full resolution
+        layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
+        layers.append(nn.Conv1d(in_ch, 1, kernel_size=5, padding=2))
+        layers.append(nn.Sigmoid())  # normalize output between [0,1]
+
+        self.deconv = nn.Sequential(*layers)
 
     def forward(self, z, cond=None):
+        """
+        Args:
+            z: latent tensor [batch, latent_dim]
+            cond: optional conditional tensor [batch, cond_dim]
+        Returns:
+            x_gen: generated output [batch, output_dim]
+        """
         if cond is not None:
             z = torch.cat([z, cond], dim=1)
+
+        # Project and reshape
         h = self.fc(z)
-        # Reshape for Conv1d
-        h = h.view(-1, self._final_channels, self._final_length)
-        x_rec = self.deconv(h)
-        # Match original dimension
-        target_len = self.in_dim
-        out_len = x_rec.shape[2]
-        if out_len > target_len:
-            x_rec = x_rec[:, :, :target_len]
-        elif out_len < target_len:
-            pad_amt = target_len - out_len
-            x_rec = nn.functional.pad(x_rec, (0, pad_amt))
-        return x_rec.view(x_rec.size(0), -1)
+        h = h.view(z.size(0), self.init_channels, self.init_length)
+
+        # Progressive upsampling
+        x = self.deconv(h)
+
+        # Adjust output to exact target length
+        if x.size(-1) > self.output_dim:
+            x = x[..., :self.output_dim]
+        elif x.size(-1) < self.output_dim:
+            pad_amt = self.output_dim - x.size(-1)
+            x = F.pad(x, (0, pad_amt))
+
+        return x.view(x.size(0), -1)
 
 # Discriminator: D(x, y)
 class Discriminator(nn.Module):
