@@ -3,7 +3,8 @@ import numpy as np
 import torch
 import pickle
 import logging
-
+import json
+import os
 from torch.utils.data import Dataset, DataLoader
 
 class MALDI(Dataset):
@@ -39,6 +40,123 @@ class MALDI(Dataset):
         else:
             return spectrum
 
+def compute_and_save_statistics(
+    spectra_m, labels_m, metas_m,
+    spectra_d, labels_d, metas_d,
+    train_idx, val_idx, test_idx, train_idx_d, ood_idx_d,
+    stats_path, logger=None
+):
+    """
+    Compute and save statistics about the number of spectra per set and per label/source.
+    """
+    stats = {}
+
+    # Helper to count per label/species
+    def count_labels(labels, metas, idxs, label_key='species', extra_keys=None):
+        counts = {}
+        for i in idxs:
+            meta = metas[i]
+            label = meta.get(label_key, str(labels[i]))
+            # Compose extra info (e.g., year, hospital)
+            extra = {}
+            if extra_keys:
+                for k in extra_keys:
+                    extra[k] = meta.get(k, None)
+            if label not in counts:
+                counts[label] = {'count': 0, 'extra': {}}
+            counts[label]['count'] += 1
+            # Count by extra keys (e.g., year, hospital)
+            for k, v in extra.items():
+                if v is not None:
+                    if k not in counts[label]['extra']:
+                        counts[label]['extra'][v] = 0
+                    counts[label]['extra'][v] = counts[label]['extra'].get(v, 0) + 1
+        return counts
+
+
+    # --- Total training statistics (MARISMa train + DRIAMS A/B train) ---
+    total_train_idxs = list(train_idx) + list(train_idx_d)
+    # For total, combine metas and labels from both sources
+    total_labels = list(labels_m[i] for i in train_idx) + list(labels_d[i] for i in train_idx_d)
+    total_metas = list(metas_m[i] for i in train_idx) + list(metas_d[i] for i in train_idx_d)
+    stats['Total_train'] = {
+        'total': len(total_train_idxs),
+        'labels': count_labels(total_labels, total_metas, range(len(total_train_idxs)), label_key='species')
+    }
+
+    # MARISMa train (years 2018-2022)
+    marisma_train_years = [metas_m[i]['year'] for i in train_idx]
+    stats['MARISMa_train'] = {
+        'years': sorted(list(set(marisma_train_years))),
+        'total': len(train_idx),
+        'labels': count_labels(labels_m, metas_m, train_idx, label_key='species', extra_keys=['year'])
+    }
+
+    # DRIAMS train (A)
+    d_a_idx = [i for i in train_idx_d if metas_d[i]['hospital'] == 'DRIAMS_A']
+    stats['DRIAMS_A_train'] = {
+        'hospital': 'DRIAMS_A',
+        'total': len(d_a_idx),
+        'labels': count_labels(labels_d, metas_d, d_a_idx, label_key='species')
+    }
+
+    # DRIAMS train (B)
+    d_b_idx = [i for i in train_idx_d if metas_d[i]['hospital'] == 'DRIAMS_B']
+    stats['DRIAMS_B_train'] = {
+        'hospital': 'DRIAMS_B',
+        'total': len(d_b_idx),
+        'labels': count_labels(labels_d, metas_d, d_b_idx, label_key='species')
+    }
+
+    # MARISMa val (2023)
+    marisma_val_years = [metas_m[i]['year'] for i in val_idx]
+    stats['MARISMa_val'] = {
+        'years': sorted(list(set(marisma_val_years))),
+        'total': len(val_idx),
+        'labels': count_labels(labels_m, metas_m, val_idx, label_key='species', extra_keys=['year'])
+    }
+
+    # MARISMa test (2024)
+    marisma_test_years = [metas_m[i]['year'] for i in test_idx]
+    stats['MARISMa_test'] = {
+        'years': sorted(list(set(marisma_test_years))),
+        'total': len(test_idx),
+        'labels': count_labels(labels_m, metas_m, test_idx, label_key='species', extra_keys=['year'])
+    }
+
+    # DRIAMS OOD (C and D)
+    ood_idx_d = [i for i in ood_idx_d if metas_d[i]['hospital'] in ['DRIAMS_C', 'DRIAMS_D']]
+    stats['DRIAMS_ood'] = {
+        'hospitals': ['DRIAMS_C', 'DRIAMS_D'],
+        'total': len(ood_idx_d),
+        'labels': count_labels(labels_d, metas_d, ood_idx_d, label_key='species', extra_keys=['hospital'])
+    }
+
+    # DRIAMS OOD (C)
+    d_c_idx = [i for i in ood_idx_d if metas_d[i]['hospital'] == 'DRIAMS_C']
+    stats['DRIAMS_C_ood'] = {
+        'hospital': 'DRIAMS_C',
+        'total': len(d_c_idx),
+        'labels': count_labels(labels_d, metas_d, d_c_idx, label_key='species')
+    }
+
+    # DRIAMS OOD (D)
+    d_d_idx = [i for i in ood_idx_d if metas_d[i]['hospital'] == 'DRIAMS_D']
+    stats['DRIAMS_D_ood'] = {
+        'hospital': 'DRIAMS_D',
+        'total': len(d_d_idx),
+        'labels': count_labels(labels_d, metas_d, d_d_idx, label_key='species')
+    }
+
+    # Save to JSON
+    with open(stats_path, 'w') as f:
+        json.dump(stats, f, indent=2)
+    if logger:
+        logger.info(f"Saved MALDI dataset statistics to {stats_path}")
+    else:
+        print(f"Saved MALDI dataset statistics to {stats_path}")
+    return stats
+
 def load_data(pickle_marisma, pickle_driams, logger: logging.Logger, get_labels=False):
     """
     Load MARISMa and DRIAMS pickled datasets, split into
@@ -54,8 +172,8 @@ def load_data(pickle_marisma, pickle_driams, logger: logging.Logger, get_labels=
     spectra_m, labels_m, metas_m = data_marisma['data'], data_marisma['label'], data_marisma['meta']
     years = np.array([int(m['year']) for m in metas_m])
 
-    train_idx = np.where((years >= 2019) & (years <= 2023))[0]
-    val_idx   = np.where(years == 2018)[0]
+    train_idx = np.where(years <= 2022)[0]
+    val_idx   = np.where(years == 2023)[0]
     test_idx  = np.where(years == 2024)[0]
     
     # --- DRIAMS ---
@@ -77,15 +195,16 @@ def load_data(pickle_marisma, pickle_driams, logger: logging.Logger, get_labels=
     test_m  = MALDI(spectra_m[test_idx], labels_m[test_idx], get_labels=get_labels)
     ood_d   = MALDI(spectra_d[ood_idx_d], labels_d[ood_idx_d], get_labels=get_labels)
 
-    logger.info("Training with MARISMa (2018-2023) and DRIAMS (A, B)")
-    logger.info(f"----Training set size: {len(train)}")
-    logger.info("Validation with MARISMa (2018)")
-    logger.info(f"Validation set size: {len(val_m)}")
-    logger.info("Testing with MARISMa (2024)")
-    logger.info(f"----Test set size: {len(test_m)}")
-    logger.info("OOD testing with DRIAMS (C, D)")
-    logger.info(f"----OOD set size: {len(ood_d)}")
-    logger.info(f"Labels: {np.unique(labels_train)}")
+    # Compute and save statistics
+    stats_dir = os.path.join(os.path.dirname(pickle_marisma), '..', 'stats')
+    os.makedirs(stats_dir, exist_ok=True)
+    stats_path = os.path.join(stats_dir, 'maldi_statistics.json')
+    compute_and_save_statistics(
+        spectra_m, labels_m, metas_m,
+        spectra_d, labels_d, metas_d,
+        train_idx, val_idx, test_idx, train_idx_d, ood_idx_d,
+        stats_path, logger=logger
+    )
 
     return train, val_m, test_m, ood_d
 
