@@ -665,15 +665,7 @@ def plot_gan_meanVSgenerated(generated_sample, mean_spectra, results_path):
 
 		mean_spec = mean_spectra[i]
 
-		# Calculate PIKE
-		gen_spec_t = to_tensor(generated_sample)
-		mean_spec_t = to_tensor(mean_spec)
-		try:
-			pike_val = calculate_PIKE_gpu(gen_spec_t, mean_spec_t)
-		except Exception:
-			pike_val = float('nan')
-		if torch.is_tensor(pike_val):
-			pike_val = pike_val.item()
+		pike_val = calculate_PIKE_gpu(mean_spec, generated_sample)
 
 		# Plot generated spectrum (light gray)
 		ax.plot(to_numpy(generated_sample), color='lightgray', linewidth=1.5, label='Generated')
@@ -692,8 +684,7 @@ def plot_gan_meanVSgenerated(generated_sample, mean_spectra, results_path):
 
 	axes[-1].set_xlabel("m/z index")
 	fig.suptitle("Generated Spectra vs Mean Real Spectra (1 per label)", fontsize=16)
-	plt.tight_layout(rect=[0, 0, 1, 0.95])
-
+	plt.tight_layout()
 	plt.savefig(results_path, dpi=300)
 	plt.close(fig)
 	print(f"Saved combined plot: {results_path}")
