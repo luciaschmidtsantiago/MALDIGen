@@ -31,7 +31,7 @@ mode = 'training'  # or 'evaluation'
 batch_size = 128
 logger = setuplogging(name, mode, results_path)
 
-train, val, test, ood = load_data(pickle_marisma, pickle_driams, logger)
+train, val, test, ood = load_data(pickle_marisma, pickle_driams, logger, get_labels=True)
 train_loader, val_loader, test_loader, ood_loader = get_dataloaders(train, val, test, ood, batch_size)
 
 # GAN
