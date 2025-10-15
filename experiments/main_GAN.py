@@ -16,7 +16,7 @@ from pytorch_model_summary import summary
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models.GAN import GenerationNetwork, Discriminator, MLPDecoder1D_Generator
+from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator
 from dataloader.data import compute_mean_spectra_per_label, load_data, get_dataloaders
 from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan
 from utils.visualization import plot_gan_meanVSgenerated
@@ -69,7 +69,11 @@ def main():
 
     # Initialize models
     # generator = GenerationNetwork(latent_dim, image_dim, batch_norm).to(device)
-    generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=0, use_bn=batch_norm).to(device)
+    gen_arch = config.get('generator', 'MLP')
+    if gen_arch == 'MLP':
+        generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=0, use_bn=batch_norm).to(device)
+    elif gen_arch == 'CNN':
+        generator = CNNDecoder1D_Generator(latent_dim, image_dim, num_layers, base_channels=32, max_pool=False, cond_dim=0).to(device)
     discriminator = Discriminator(image_dim).to(device)
 
     logger.info("\nGENERATOR:\n" + str(summary(generator, torch.zeros(1, latent_dim).to(device), show_input=False, show_hierarchical=False)))
@@ -123,7 +127,7 @@ def main():
     with torch.no_grad():
         for i in range(n_samples):
             start = time.time()
-            sample = generator(z[i].unsqueeze(0)).cpu().squeeze(0)  # [1, image_dim], already passed through sigmoid in generator
+            sample = generator(z[i].unsqueeze(0)).squeeze(0)  # [1, image_dim], already passed through sigmoid in generator
             end = time.time()
             gen_times.append(end - start)
             saving_path = os.path.join(results_path, 'plots', f'GAN_generated_spectrum_{i+1}.png')
