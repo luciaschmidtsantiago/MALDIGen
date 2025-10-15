@@ -54,7 +54,7 @@ for i, step in enumerate(preprocess_pipeline.preprocessors, 1):
 
 # Initialize the MALDIManager
 pickle_path = os.path.join(os.path.dirname(__file__), 'MARISMa_anonymized.pkl')
-manager = MARISMaManager(dataset_path, presaved=True, pickel_path=pickle_path)
+manager = MARISMaManager(dataset_path, presaved=True, pickle_path=pickle_path)
 
 genus_species_list = [
     ("Klebsiella", "Pneumoniae"),
