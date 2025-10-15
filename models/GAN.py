@@ -6,27 +6,6 @@ from utils.conditional_utils import get_condition, impute_missing_labels, comput
 
 ############### GAN ###############
 
-# Generation Network (p_theta)
-class GenerationNetwork(nn.Module):
-    def __init__(self, latent_dim, image_dim, bn = False):
-        super().__init__()
-        self.fc1 = nn.Linear(latent_dim, 256)
-        self.bn1 = nn.BatchNorm1d(256) if bn else None
-        self.fc2 = nn.Linear(256, 512)
-        self.bn2 = nn.BatchNorm1d(512) if bn else None
-        self.fc3 = nn.Linear(512, 1024)
-        self.bn3 = nn.BatchNorm1d(1024) if bn else None
-        self.fc_out = nn.Linear(1024, image_dim)
-
-    def forward(self, z):
-        h = F.relu(self.fc1(z))
-        h = self.bn1(h) if self.bn1 else h
-        h = F.relu(self.fc2(h))
-        h = self.bn2(h) if self.bn2 else h
-        h = F.relu(self.fc3(h))
-        h = self.bn3(h) if self.bn3 else h
-        return torch.sigmoid(self.fc_out(h))  # spectra in [0,1]
-
 class MLPDecoder1D_Generator(nn.Module):
     def __init__(self, latent_dim, num_layers, output_dim, cond_dim=0, use_bn=False):
         """ Flexible MLP generator (decoder) with optional Batch Normalization.
@@ -71,6 +50,83 @@ class MLPDecoder1D_Generator(nn.Module):
             z = torch.cat([z, cond], dim=1)
         return self.net(z)
 
+class CNNDecoder1D_Generator(nn.Module):
+    """
+    Flexible 1D CNN generator (decoder) with optional conditioning, inspired by MLPDecoder1D_Generator and CNNDecoder1D.
+    Args:
+        latent_dim (int): Dimension of the latent noise vector.
+        img_shape (tuple): Shape of the output (channels, length).
+        num_layers (int): Number of upsampling layers.
+        base_channels (int): Number of base channels for upsampling.
+        max_pool (bool): Whether to simulate max pooling in upsampling structure.
+        cond_dim (int): Dimension of conditional vector (0 for unconditional).
+    """
+    def __init__(self, latent_dim, in_dim, num_layers=3, base_channels=32, max_pool=False, cond_dim=0):
+        super().__init__()
+        self.in_dim = in_dim
+        self.num_layers = num_layers
+        self.base_channels = base_channels
+        self.max_pool = max_pool
+        self.cond_dim = cond_dim
+
+        # Compute upsampling structure to determine final channels and length
+        length = in_dim
+        channels = base_channels
+        pool_count = 0
+        for i in range(num_layers):
+            length = (length + 2 * 1 - 4) // 2 + 1
+            channels *= 2
+            if max_pool and (i + 1) % 2 == 0 and i != num_layers - 1:
+                length = (length - 2) // 2 + 1
+                pool_count += 1
+        channels = channels // 2
+        self._final_channels = channels
+        self._final_length = length
+
+        # Fully connected expansion
+        fc_hidden = [4 * latent_dim * (2 ** i) for i in range(num_layers)]
+        fc_layers = []
+        fc_in_dim = latent_dim + cond_dim
+        for out_dim in fc_hidden:
+            fc_layers.append(nn.Linear(fc_in_dim, out_dim))
+            fc_layers.append(nn.LeakyReLU())
+            fc_in_dim = out_dim
+        fc_layers.append(nn.Linear(fc_in_dim, self._final_channels * self._final_length))
+        fc_layers.append(nn.LeakyReLU())
+        self.fc = nn.Sequential(*fc_layers)
+
+        # Deconvolutional upsampling
+        num_upsamples = num_layers + pool_count
+        deconv_layers = []
+        in_channels = self._final_channels
+        out_channels = in_channels // 2
+        for i in range(num_upsamples - 1):
+            deconv_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
+            deconv_layers.append(nn.Conv1d(in_channels, out_channels, kernel_size=3, padding=1))
+            deconv_layers.append(nn.LeakyReLU())
+            in_channels = out_channels
+            out_channels = max(1, in_channels // 2)
+        deconv_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
+        deconv_layers.append(nn.Conv1d(in_channels, 1, kernel_size=3, padding=1))
+        deconv_layers.append(nn.Sigmoid())  # Output normalized to [0,1]
+        self.deconv = nn.Sequential(*deconv_layers)
+
+    def forward(self, z, cond=None):
+        if cond is not None:
+            z = torch.cat([z, cond], dim=1)
+        h = self.fc(z)
+        # Reshape for Conv1d
+        h = h.view(-1, self._final_channels, self._final_length)
+        x_rec = self.deconv(h)
+        # Match original dimension
+        target_len = self.in_dim
+        out_len = x_rec.shape[2]
+        if out_len > target_len:
+            x_rec = x_rec[:, :, :target_len]
+        elif out_len < target_len:
+            pad_amt = target_len - out_len
+            x_rec = nn.functional.pad(x_rec, (0, pad_amt))
+        return x_rec.view(x_rec.size(0), -1)
 
 # Discriminator: D(x, y)
 class Discriminator(nn.Module):
@@ -86,54 +142,6 @@ class Discriminator(nn.Module):
         h = F.leaky_relu(self.fc2(h), 0.2)
         h = F.leaky_relu(self.fc3(h), 0.2)
         return torch.sigmoid(self.fc_out(h))
-
-class ConvDiscriminator(nn.Module):
-    def __init__(self, y_embed_dim, label2_dim, img_shape, disc_hidden):
-        super().__init__()
-        self.img_shape = img_shape
-        
-        # Parte convolucional para procesar la imagen
-        self.conv = nn.Sequential(
-            nn.Conv2d(1, 32, 4, stride=2, padding=1), nn.LeakyReLU(0.2),
-            nn.Conv2d(32, 64, 4, stride=2, padding=1), nn.LeakyReLU(0.2),
-            nn.Dropout2d(0.25),  # Regularización espacial
-            nn.Conv2d(64, 128, 4, stride=2, padding=1), nn.LeakyReLU(0.2),
-            nn.Conv2d(128, 256, 4, stride=2, padding=1), nn.LeakyReLU(0.2),
-            nn.Dropout2d(0.25),
-            nn.Flatten()
-        )
-        
-        # Calcular dimensión después de convoluciones
-        conv_out_dim = (img_shape[1] // 16) * (img_shape[2] // 16) * 256
-        
-        # Parte fully connected que combina features conv + condición
-        self.fc = nn.Sequential(
-            nn.Linear(conv_out_dim + y_embed_dim + label2_dim, disc_hidden), nn.LeakyReLU(0.2),
-            nn.Dropout(0.3),
-            nn.Linear(disc_hidden, 256), nn.LeakyReLU(0.2),
-            nn.Dropout(0.2),
-            nn.Linear(256, 1)  # Salida escalar: logits real/fake
-        )
-    
-    def forward(self, x, cond):
-        """
-        Args:
-            x: tensor [batch, D] imágenes flatten (reales o generadas)
-            cond: tensor [batch, cond_dim] condición (de get_condition)
-        Returns:
-            logits: tensor [batch, 1] logits de probabilidad real/fake
-        """
-        # Reshape a imagen 2D para convoluciones
-        x_img = x.view(-1, 1, self.img_shape[1], self.img_shape[2])
-        
-        # Extraer features convolucionales
-        conv_features = self.conv(x_img)
-        
-        # Combinar con condición
-        h = torch.cat([conv_features, cond], dim=1)
-        
-        return self.fc(h)
-
 
 
 ################ Conditional GAN ###############
