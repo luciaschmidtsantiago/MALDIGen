@@ -4,7 +4,7 @@ from itertools import combinations
 import os
 import csv
 
-from losses.PIKE_GPU import calculate_PIKE_gpu
+from PIKE_GPU import calculate_PIKE_gpu
 
 # Helper to ensure input is a 1D torch tensor (float32, on device)
 def to_tensor_1d(x, device=None):
@@ -12,23 +12,6 @@ def to_tensor_1d(x, device=None):
         return x.float().to(device).view(-1)
     x = np.asarray(x)
     return torch.from_numpy(x.astype(np.float32)).to(device).view(-1)
-
-
-def pike_kernel(x, y, t=8):
-    """
-    Compute PIKE kernel between two spectra represented as (mz, intensity) arrays.
-    x: np.ndarray of shape (n_peaks, 2) -> [m/z, intensity]
-    y: np.ndarray of shape (m_peaks, 2) -> [m/z, intensity]
-    t: bandwidth parameter
-    """
-    mz_x, I_x = x[:, 0], x[:, 1]
-    mz_y, I_y = y[:, 0], y[:, 1]
-
-    # Pairwise Gaussian on m/z
-    diff = mz_x[:, None] - mz_y[None, :]
-    weights = np.exp(- (diff ** 2) / (2 * t ** 2))
-
-    return np.sum((I_x[:, None] * I_y[None, :]) * weights)
 
 def mmd_pike(X, Y, t=8):
     """
@@ -71,30 +54,6 @@ def mmd_pike(X, Y, t=8):
     K_xy = sum_xy / (m * n)
 
     return K_xx + K_yy - 2 * K_xy
-
-# DISCARDED
-def jaccard_topk(x, y, k=50, mz_tol=0.1):
-    """
-    Jaccard index between top-k peaks of spectra x and y.
-    x, y: np.ndarray of shape (n_peaks, 2) -> [m/z, intensity]
-    k: number of top peaks by intensity
-    mz_tol: tolerance for considering peaks as matching
-    Returns: Jaccard index (float)
-    """
-    # Defensive: handle 1D input (intensity only)
-    if x.ndim == 1:
-        x = np.stack([np.arange(x.shape[0]), x], axis=1)
-    if y.ndim == 1:
-        y = np.stack([np.arange(y.shape[0]), y], axis=1)
-    # Select top-k mz values
-    x_top = x[np.argsort(x[:, 1])[-k:], 0]
-    y_top = y[np.argsort(y[:, 1])[-k:], 0]
-    # Match peaks with tolerance
-    x_set = set(int(mz / mz_tol) for mz in x_top)
-    y_set = set(int(mz / mz_tol) for mz in y_top)
-    inter = len(x_set & y_set)
-    union = len(x_set | y_set)
-    return inter / union if union > 0 else 0.0
 
 
 def class_distance(X_gen_class, t=8):
@@ -140,23 +99,16 @@ def neighbour_distance(X_gen, Y_train, t=8):
 
 def save_generative_metrics_csv(generated_spectra, mean_spectra_test, results_path):
     """
-    Compute and save mean±std of MMD, Jaccard, class distance, and neighbor distance for each label's generated spectra.
+    Compute and save mean±std of MMD, class distance, and neighbor distance for each label's generated spectra.
     """
     # Prepare test spectra as list (using means for each label)
     test_spectra_list = [mean_spectra_test[label_id].cpu().numpy().squeeze() for label_id in mean_spectra_test]
     csv_rows = []
-    header = ["label", "MMD", "Jaccard_mean±std", "ClassDist_mean±std", "NeighborDist_mean±std"]
+    header = ["label", "MMD", "ClassDist_mean±std", "NeighborDist_mean±std"]
     for label_name, gen_specs in generated_spectra.items():
         gen_specs_list = [g for g in gen_specs]
         # MMD (PIKE kernel) for this label (all generated vs all test)
         mmd = mmd_pike(gen_specs_list, test_spectra_list)
-        # Jaccard index (average over all pairs)
-        jaccard_scores = []
-        for g in gen_specs_list:
-            for y in test_spectra_list:
-                jaccard_scores.append(jaccard_topk(g, y))
-        jaccard_mean = np.mean(jaccard_scores)
-        jaccard_std = np.std(jaccard_scores)
         # Class distance (within generated for this label)
         class_dist_mean, class_dist_std = class_distance(gen_specs_list)
         # Neighbor distance (generated to test)
@@ -164,7 +116,6 @@ def save_generative_metrics_csv(generated_spectra, mean_spectra_test, results_pa
         csv_rows.append([
             label_name,
             f"{mmd:.4f}",
-            f"{jaccard_mean:.4f}±{jaccard_std:.4f}",
             f"{class_dist_mean:.4f}±{class_dist_std:.4f}",
             f"{neighbor_dist_mean:.4f}±{neighbor_dist_std:.4f}"
         ])

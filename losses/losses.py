@@ -4,7 +4,7 @@ import numpy as np
 import os
 import sys
 
-from losses.PIKE import PIKE, generate_spectrum, reshape_spectrum
+from PIKE import PIKE, generate_spectrum, reshape_spectrum
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from utils.probability_distributions import log_bernoulli, log_normal_diag
