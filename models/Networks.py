@@ -16,7 +16,7 @@ class MLPEncoder1D(nn.Module):
 
         for out_dim in hidden_dims:
             layers.append(nn.Linear(self.in_dim, out_dim))
-            layers.append(nn.ReLU())
+            layers.append(nn.LeakyReLU())
             self.in_dim = out_dim
 
         # Final projection to [μ, logσ²]

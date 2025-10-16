@@ -2,9 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import torch
-import torch.nn.functional as F
-
 def get_condition(y_species, y_amr=None, y_embed_layer_species=None, y_embed_layer_amr=None, embedding=False):
     """
     Get conditioning vector for conditional VAE.
