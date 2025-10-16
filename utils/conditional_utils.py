@@ -1,8 +1,9 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-def get_condition(y_species, y_amr=None, y_embed_layer_species=None, y_embed_layer_amr=None, embedding=False):
+def get_condition(y_species, y_amr=None, y_embed_layer_species=None, y_embed_layer_amr=None, embedding=False, n_classes=6):
     """
     Get conditioning vector for conditional VAE.
 
@@ -50,7 +51,7 @@ def get_condition(y_species, y_amr=None, y_embed_layer_species=None, y_embed_lay
     # One-hot encoding without embedding
     else:
         # y_species is categorical multi-class
-        y_species_onehot = F.one_hot(y_species, num_classes=y_embed_layer_species.num_embeddings).float()
+        y_species_onehot = F.one_hot(y_species, num_classes=n_classes).float()
         if y_amr is not None and y_amr.shape[1] > 0:
             # y_amr is expected to be multi-label binary or soft labels
             cond = torch.cat([y_species_onehot, y_amr], dim=1)
