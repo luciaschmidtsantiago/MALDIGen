@@ -16,7 +16,7 @@ from pytorch_model_summary import summary
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator
+from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator, GAN
 from dataloader.data import compute_mean_spectra_per_label, load_data, get_dataloaders
 from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan
 from utils.visualization import plot_gan_meanVSgenerated
@@ -54,6 +54,8 @@ def main():
     lr_g = config.get('lr_g', 2e-4)
     lr_d = config.get('lr_d', 1e-4)
     max_patience = config.get('max_patience', 10)
+    use_dropout = config.get('use_dropout', True)
+    drop_p = config.get('dropout_prob', 0.1)
 
     logger.info(f"TRAINING CONFIGURATION:")
     logger.info("=" * 80)
@@ -74,17 +76,34 @@ def main():
         generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=0, use_bn=batch_norm).to(device)
     elif gen_arch == 'CNN':
         generator = CNNDecoder1D_Generator(latent_dim, image_dim, num_layers=num_layers, use_bn=batch_norm).to(device)
-    discriminator = Discriminator(image_dim).to(device)
+    discriminator = Discriminator(image_dim, cond_dim=0, use_bn=batch_norm, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
 
-    logger.info("\nGENERATOR:\n" + str(summary(generator, torch.zeros(1, latent_dim).to(device), show_input=False, show_hierarchical=False)))
-    logger.info("\nDISCRIMINATOR:\n" + str(summary(discriminator, torch.zeros(1, image_dim).to(device), show_input=False, show_hierarchical=False)))
+    model = GAN(generator, discriminator).to(device)
 
+    # === MODEL SUMMARIES ===
+    dummy_z = torch.zeros(1, latent_dim).to(device)
+    dummy_x = torch.zeros(1, image_dim).to(device)
+
+    try:
+        gen_summary = summary(generator, dummy_z, show_input=False, show_hierarchical=False)
+    except Exception as e:
+        logger.warning(f"Generator summary failed: {e}")
+        gen_summary = str(generator)
+
+    try:
+        disc_summary = summary(discriminator, dummy_x, show_input=False, show_hierarchical=False)
+    except Exception as e:
+        logger.warning(f"Discriminator summary failed: {e}")
+        disc_summary = str(discriminator)
+
+    logger.info("\nGENERATOR:\n" + gen_summary)
+    logger.info("\nDISCRIMINATOR:\n" + disc_summary)
 
     if args.train:
         # Train the GAN using new GAN-specific experiment runner
         loaders = train_loader, val_loader, test_loader
-        generator, discriminator, metadata = run_experiment_gan(generator, discriminator, loaders, device, config, results_path, logger)
-
+        generator, discriminator, metadata  = run_experiment_gan(model, loaders, device, config, results_path, logger)
+        
         # Save best models
         gen_path = os.path.join(results_path, 'best_generator.pt')
         disc_path = os.path.join(results_path, 'best_discriminator.pt')
@@ -104,16 +123,16 @@ def main():
         # Load the best model from a previous training
         if pretrained_generator is None or pretrained_discriminator is None:
             raise ValueError("Pretrained model paths must be specified in the config for evaluation mode.")
-        generator.load_state_dict(torch.load(pretrained_generator, map_location=device))
-        discriminator.load_state_dict(torch.load(pretrained_discriminator, map_location=device))
+        model.generator.load_state_dict(torch.load(pretrained_generator, map_location=device))
+        model.discriminator.load_state_dict(torch.load(pretrained_discriminator, map_location=device))
         logger.info(f"Loaded pretrained generator from {pretrained_generator}")
         logger.info(f"Loaded pretrained discriminator from {pretrained_discriminator}")
 
         criterion = torch.nn.BCELoss()
-        val_loss, val_d, val_g = evaluation_gan(val_loader, generator, discriminator, criterion, config['latent_dim'], device)
+        val_loss, val_d, val_g = evaluation_gan(model, val_loader, criterion, config['latent_dim'], device)
         logger.info(f"Validation loss: {val_loss:.4f} (D={val_d:.4f}, G={val_g:.4f})")
 
-        test_loss, test_d, test_g = evaluation_gan(test_loader, generator, discriminator, criterion, config['latent_dim'], device)
+        test_loss, test_d, test_g = evaluation_gan(model, test_loader, criterion, config['latent_dim'], device)
         logger.info(f"Test loss: {test_loss:.4f} (D={test_d:.4f}, G={test_g:.4f})")
 
     # Generate and plot spectra with respect to the TRAINING SET
@@ -121,15 +140,21 @@ def main():
     mean_spectra_list = [mean_spectra_train[i].squeeze(0) for i in range(len(mean_spectra_train))]
     print(f"Mean spectra per label (train set) computed for {len(mean_spectra_list)} labels.")
 
-    n_samples = 6
-    z = torch.randn(n_samples, latent_dim).to(device)
+    n_samples = 5
     gen_times = []
+    os.makedirs(os.path.join(results_path, 'plots'), exist_ok=True)
+
     with torch.no_grad():
         for i in range(n_samples):
+
+            # Generate a random latent vector
             start = time.time()
-            sample = generator(z[i].unsqueeze(0)).squeeze(0)  # [1, image_dim], already passed through sigmoid in generator
+            z = torch.randn(1, latent_dim, device=device)
+            sample = model.forward_G(z).squeeze(0)  # [1, image_dim], already passed through sigmoid in generator
             end = time.time()
             gen_times.append(end - start)
+
+            # Save plot
             saving_path = os.path.join(results_path, 'plots', f'GAN_generated_spectrum_{i+1}.png')
             os.makedirs(os.path.dirname(saving_path), exist_ok=True)
             plot_gan_meanVSgenerated(sample, mean_spectra_list, saving_path)
