@@ -157,14 +157,15 @@ def compute_and_save_statistics(
         print(f"Saved MALDI dataset statistics to {stats_path}")
     return stats
 
-def load_data(pickle_marisma, pickle_driams, logger: logging.Logger, get_labels=False):
+def load_data(pickle_marisma, pickle_driams, logger=None, get_labels=False):
     """
     Load MARISMa and DRIAMS pickled datasets, split into
     train/val/test/OOD, and wrap them in MALDI Dataset objects.
     """
-    logger.info("=" * 80)
-    logger.info("DATA CONFIGURATION")
-    logger.info("=" * 80)
+    if logger is not None:
+        logger.info("=" * 80)
+        logger.info("DATA CONFIGURATION")
+        logger.info("=" * 80)
 
     # --- MARISMa ---
     with open(pickle_marisma, "rb") as f:
