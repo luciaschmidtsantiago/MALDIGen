@@ -130,133 +130,103 @@ class CNNDecoder1D_Generator(nn.Module):
 
 # Discriminator: D(x, y)
 class Discriminator(nn.Module):
-    def __init__(self, image_dim):
+    def __init__(self, image_dim, cond_dim=0, use_bn=False, use_dropout=True, dropout_prob=0.1):
         super().__init__()
-        self.fc1 = nn.Linear(image_dim, 1024)
+        input_dim = image_dim + cond_dim
+        self.fc1 = nn.Linear(input_dim, 1024)
         self.fc2 = nn.Linear(1024, 512)
         self.fc3 = nn.Linear(512, 256)
         self.fc_out = nn.Linear(256, 1)
+        if use_bn:
+            self.bn1, self.bn2, self.bn3 = nn.BatchNorm1d(1024), nn.BatchNorm1d(512), nn.BatchNorm1d(256)
+        else:
+            self.bn1 = self.bn2 = self.bn3 = None
+        if use_dropout:
+            self.dp1, self.dp2, self.dp3 = nn.Dropout(dropout_prob), nn.Dropout(dropout_prob), nn.Dropout(dropout_prob)
+        else:
+            self.dp1 = self.dp2 = self.dp3 = None
 
-    def forward(self, x):
-        h = F.leaky_relu(self.fc1(x), 0.2)
-        h = F.leaky_relu(self.fc2(h), 0.2)
-        h = F.leaky_relu(self.fc3(h), 0.2)
-        return torch.sigmoid(self.fc_out(h))
+    def forward(self, x, cond=None):
+        if cond is not None and cond.numel() > 0:
+            x = torch.cat([x, cond], dim=1)
+        for fc, bn, dp in zip([self.fc1, self.fc2, self.fc3], [self.bn1, self.bn2, self.bn3], [self.dp1, self.dp2, self.dp3]):
+            x = fc(x)
+            if bn: x = bn(x)
+            x = F.leaky_relu(x, 0.2)
+            if dp: x = dp(x)
+        # Pass through Sigmoid
+        out = torch.sigmoid(self.fc_out(x))
+        return out
+    
+
+
+################ GAN ###############
+class GAN(nn.Module):
+    """
+    Simple (unconditional) GAN wrapper class for training and evaluation.
+
+    Args:
+        generator (nn.Module): generator network (G)
+        discriminator (nn.Module): discriminator network (D)
+    """
+    def __init__(self, generator, discriminator):
+        super().__init__()
+        self.generator = generator
+        self.discriminator = discriminator
+
+    def forward_G(self, z):
+        """
+        Forward through the generator.
+        Args:
+            z (Tensor): latent vector [batch, latent_dim]
+        Returns:
+            Tensor: generated sample [batch, output_dim]
+        """
+        return self.generator(z)
+
+    def forward_D(self, x):
+        """
+        Forward through the discriminator.
+        Args:
+            x (Tensor): real or generated data [batch, input_dim]
+        Returns:
+            Tensor: discriminator output (probability of being real)
+        """
+        return self.discriminator(x)
 
 
 ################ Conditional GAN ###############
-
-class ConditionalDiscriminator(nn.Module):
-    def __init__(self, discriminator_net, y_dim, y_embed_dim, label2_dim):
-        super().__init__()
-        self.discriminator = discriminator_net
-        self.y_embed = nn.Embedding(y_dim, y_embed_dim)
-        self.label2_dim = label2_dim
-    
-    def forward(self, x, cond):
-        """
-        Discriminar si x es real o fake condicionado en cond
-        
-        Args:
-            x: tensor [batch, input_dim] imágenes reales o generadas
-            cond: tensor [batch, cond_dim] condición (de get_condition)
-        
-        Returns:
-            logits: tensor [batch, 1] logits de probabilidad real/fake
-        """
-        logits = self.discriminator(x, cond)
-        return logits
-
 class ConditionalGAN(nn.Module):
-    def __init__(self, generator, discriminator, latent_dim=128, lambda_g=1.0, lambda_d=1.0):
-        """
-        GAN Condicional que usa ConditionalDecoder como generador
-        
-        Args:
-            generator: ConditionalDecoder que actúa como generador
-            discriminator: ConditionalDiscriminator 
-            latent_dim: dimensión del espacio latente para el ruido
-            lambda_g: peso para la pérdida del generador
-            lambda_d: peso para la pérdida del discriminador
-        """
+    """
+    Conditional GAN wrapper that manages conditioning embeddings and 
+    passes cond vectors to G and D automatically.
+    """
+    def __init__(self, generator, discriminator, 
+                 y_species_dim, y_embed_dim, y_amr_dim=0, embedding=True):
         super().__init__()
-        self.generator = generator  # ConditionalDecoder
+        self.generator = generator
         self.discriminator = discriminator
-        self.latent_dim = latent_dim
-        self.lambda_g = lambda_g
-        self.lambda_d = lambda_d
-    
-    def forward(self, x_real, y, label2):
-        """
-        Forward pass que calcula ambas pérdidas (discriminador + generador)
-        
-        Args:
-            x_real: tensor [batch, input_dim] datos reales
-            y: tensor [batch, num_labels] etiquetas multilabel
-            label2: tensor [batch] etiquetas categóricas
-        
-        Returns:
-            total_loss: pérdida total (lambda_d * d_loss + lambda_g * g_loss)
-        """
-        batch_size = x_real.size(0)
-        cond = get_condition(y, label2, self.generator.y_embed, self.generator.label2_dim)
-        
-        # === PÉRDIDA DEL DISCRIMINADOR ===
-        # 1. Discriminador en datos reales
-        real_logits = self.discriminator(x_real, cond)
-        real_probs = torch.sigmoid(real_logits)
-        real_loss = F.binary_cross_entropy(
-            real_probs, torch.ones_like(real_probs)
+        self.embedding = embedding
+
+        # Embedding layers
+        self.y_embed_species = nn.Embedding(y_species_dim, y_embed_dim) if embedding else None
+        self.y_embed_amr = nn.Embedding(y_amr_dim, y_embed_dim) if (embedding and y_amr_dim > 0) else None
+        self.y_amr_dim = y_amr_dim
+
+    def get_cond(self, y_species, y_amr=None):
+        return get_condition(
+            y_species, y_amr, 
+            self.y_embed_species, self.y_embed_amr,
+            embedding=self.embedding
         )
-        
-        # 2. Generar datos fake
-        noise = torch.randn(batch_size, self.latent_dim, device=x_real.device)
-        x_fake = self.generator.sample(noise, cond)
-        
-        # 3. Discriminador en datos fake (para pérdida de D)
-        fake_logits_d = self.discriminator(x_fake.detach(), cond)  # detach() para no actualizar G
-        fake_probs_d = torch.sigmoid(fake_logits_d)
-        fake_loss = F.binary_cross_entropy(
-            fake_probs_d, torch.zeros_like(fake_probs_d)
-        )
-        
-        d_loss = real_loss + fake_loss
-        
-        # === PÉRDIDA DEL GENERADOR ===
-        # 4. Discriminador en datos fake (para pérdida de G)
-        fake_logits_g = self.discriminator(x_fake, cond)  # sin detach() para actualizar G
-        fake_probs_g = torch.sigmoid(fake_logits_g)
-        g_loss = F.binary_cross_entropy(
-            fake_probs_g, torch.ones_like(fake_probs_g)  # G quiere engañar a D
-        )
-        
-        # === PÉRDIDA TOTAL ===
-        total_loss = self.lambda_d * d_loss + self.lambda_g * g_loss
-        
-        return total_loss
-    
-    def sample(self, y, label2, batch_size=64):
-        """
-        Generar muestras condicionadas
-        
-        Args:
-            y: tensor [batch, num_labels] etiquetas multilabel
-            label2: tensor [batch] etiquetas categóricas
-            batch_size: número de muestras (si y/label2 no especifican batch)
-        
-        Returns:
-            x_fake: tensor [batch, input_dim] muestras generadas
-        """
-        if y.size(0) != batch_size:
-            batch_size = y.size(0)
-            
-        cond = get_condition(y, label2, self.generator.y_embed, self.generator.label2_dim)
-        
-        # Generar ruido y decodificar
-        noise = torch.randn(batch_size, self.latent_dim, device=y.device)
-        x_fake = self.generator.sample(noise, cond)
-        
-        return x_fake
+
+    def forward_G(self, z, y_species=None, y_amr=None):
+        cond = self.get_cond(y_species, y_amr) if y_species is not None else None
+        return self.generator(z, cond)
+
+    def forward_D(self, x, y_species=None, y_amr=None):
+        cond = self.get_cond(y_species, y_amr) if y_species is not None else None
+        return self.discriminator(x, cond)
 
 
 
