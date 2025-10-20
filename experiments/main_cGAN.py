@@ -25,8 +25,8 @@ from utils.test_utils import write_metadata_csv
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--config', default='configs/cgan_MLP3_32.yaml', type=str)
-    p.add_argument('--train', action='store_true', default=False, help='Run training (default: only evaluation/visualization)')
+    p.add_argument('--config', default='configs/cgan_CNN3_32.yaml', type=str)
+    p.add_argument('--train', action='store_true', default=True, help='Run training (default: only evaluation/visualization)')
     return p.parse_args()
 
 def main():
@@ -84,7 +84,7 @@ def main():
     if gen_arch == 'MLP':
         generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=cond_dim, use_bn=batch_norm).to(device)
     elif gen_arch == 'CNN':
-        generator = CNNDecoder1D_Generator(latent_dim, image_dim, num_layers=num_layers, cond_dim=cond_dim, use_bn=batch_norm).to(device)
+        generator = CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, cond_dim=cond_dim, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
     discriminator = Discriminator(image_dim, cond_dim=cond_dim, use_bn=batch_norm, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
 
     model = ConditionalGAN(generator=generator,

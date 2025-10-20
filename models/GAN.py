@@ -61,9 +61,11 @@ class CNNDecoder1D_Generator(nn.Module):
     """
     def __init__(
         self,
-        latent_dim=32,
-        output_dim=6000,
+        latent_dim,
+        output_dim,
+        n_layers=3,
         cond_dim=0,
+        base_channels=128,
         use_dropout=True,
         dropout_prob=0.1,
     ):
@@ -71,31 +73,45 @@ class CNNDecoder1D_Generator(nn.Module):
         self.latent_dim = latent_dim
         self.output_dim = output_dim
         self.cond_dim = cond_dim
+        self.n_layers = n_layers
+        self.base_channels = base_channels
         self.use_dropout = use_dropout
         self.dropout_prob = dropout_prob
 
-        # 1. Linear: latent_dim → 2048, reshape to [batch, 128, 16]
-        self.fc = nn.Linear(latent_dim, 128 * 16)
+        # Compute initial feature map size
+        init_length = 16  # You may want to make this dynamic
+        # Fix: first conv layer should output 64 channels, not base_channels
+        # Set up channel progression: [128, 64, 32, 16, ...]
+        out_channels = [max(1, base_channels // (2 ** (i + 1))) for i in range(n_layers)]
+        in_channels = [base_channels] + out_channels[:-1]
 
-        # 2. CNN Upsampling blocks (modularized)
-        up_block_specs = [
-            (128, 64),  # [128, 16] → [64, 32]
-            (64, 32),   # [64, 32] → [32, 64]
-            (32, 16),   # [32, 64] → [16, 128]
-        ]
+        # 1. Linear: latent_dim → base_channels * init_length
+        self.fc = nn.Linear(latent_dim, base_channels * init_length)
+        self.init_length = init_length
+
+        # 2. Build upsampling blocks
         self.upsample_blocks = nn.ModuleList()
-        for in_ch, out_ch in up_block_specs:
+        for i in range(n_layers):
             block = nn.Sequential(
                 nn.Upsample(scale_factor=2, mode="nearest"),
-                nn.Conv1d(in_ch, out_ch, kernel_size=5, padding=2),
+                nn.Conv1d(in_channels[i], out_channels[i], kernel_size=5, padding=2),
                 nn.LeakyReLU(0.2, inplace=True),
                 nn.Dropout(dropout_prob) if use_dropout else nn.Identity()
             )
             self.upsample_blocks.append(block)
 
-        # 3. Final MLP head (input: 16*128 + cond_dim)
+        # 3. Compute flattened size for final MLP
+        with torch.no_grad():
+            dummy = torch.zeros(1, latent_dim)
+            h = self.fc(dummy)
+            x = h.view(1, base_channels, init_length)
+            for block in self.upsample_blocks:
+                x = block(x)
+            flattened_dim = x.view(1, -1).shape[1]
+
+        # 4. Final MLP head
         self.final_fc = nn.Sequential(
-            nn.Linear(16 * 128 + cond_dim, 1024),
+            nn.Linear(flattened_dim + cond_dim, 1024),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Linear(1024, output_dim),
             nn.Sigmoid()
@@ -103,7 +119,7 @@ class CNNDecoder1D_Generator(nn.Module):
 
     def forward(self, z, cond=None):
         """
-        Forward pass for CNN-based generator.
+        Forward pass for generalizable CNN-based generator.
         Args:
             z (Tensor): Latent noise [batch, latent_dim]
             cond (Tensor, optional): Conditional vector [batch, cond_dim]
@@ -111,10 +127,10 @@ class CNNDecoder1D_Generator(nn.Module):
             out (Tensor): Generated spectrum [batch, output_dim]
         """
         # 1. Latent vector → feature map
-        h = self.fc(z)  # [batch, 128*16]
-        x = h.view(z.size(0), 128, 16)
+        h = self.fc(z)
+        x = h.view(z.size(0), self.base_channels, self.init_length)
 
-        # 2. CNN upsampling path (modularized)
+        # 2. CNN upsampling path
         for block in self.upsample_blocks:
             x = block(x)
 
