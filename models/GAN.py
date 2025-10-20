@@ -51,82 +51,99 @@ class MLPDecoder1D_Generator(nn.Module):
         return self.net(z)
 
 class CNNDecoder1D_Generator(nn.Module):
-    """
-    Improved 1D CNN generator (decoder) for GANs.
-    - Starts from a small learned feature map instead of huge FC expansion.
-    - Upsamples progressively to reach the target length.
-    - Optional conditioning and BatchNorm for stable training.
+    """ Simple 1D CNN Generator for spectra synthesis. """
 
-    Args:
-        latent_dim (int): Dimension of the latent noise vector (e.g. 32).
-        output_dim (int): Final output length (e.g. 6000).
-        base_channels (int): Base number of channels for the first conv feature map.
-        num_layers (int): Number of upsampling layers.
-        cond_dim (int): Optional conditioning dimension (default 0).
-        use_bn (bool): Whether to use BatchNorm1d (default True).
-    """
-    def __init__(self, latent_dim, output_dim, num_layers=4, base_channels=128, cond_dim=0, use_bn=True):
+    def __init__(
+        self,
+        latent_dim=32,
+        output_dim=6000,
+        cond_dim=0,
+        use_dropout=True,
+        dropout_prob=0.1,
+    ):
         super().__init__()
         self.latent_dim = latent_dim
         self.output_dim = output_dim
         self.cond_dim = cond_dim
-        self.use_bn = use_bn
+        self.use_dropout = use_dropout
+        self.dropout_prob = dropout_prob
 
-        # Starting feature map dimensions (length small, upsample progressively)
-        self.init_length = output_dim // (2 ** num_layers)  # e.g. 6000 / 16 = 375
-        self.init_channels = base_channels  # e.g. 128
+        # 1. Linear: latent_dim → 2048
+        self.fc = nn.Linear(latent_dim, 2048)
 
-        # Fully connected: latent → feature map
-        self.fc = nn.Sequential(
-            nn.Linear(latent_dim + cond_dim, self.init_channels * self.init_length),
-            nn.LeakyReLU(0.2)
+        # 2. CNN Upsampling blocks
+        self.upsample1 = nn.Upsample(scale_factor=2, mode="nearest")  # 2048 → [128, 16]
+        self.conv1 = nn.Conv1d(128, 64, kernel_size=5, padding=2)
+        self.act1 = nn.LeakyReLU(0.2, inplace=True)
+        self.drop1 = nn.Dropout(dropout_prob) if use_dropout else nn.Identity()
+
+        self.upsample2 = nn.Upsample(scale_factor=2, mode="nearest")  # [64, 16] → [64, 32]
+        self.conv2 = nn.Conv1d(64, 32, kernel_size=5, padding=2)
+        self.act2 = nn.LeakyReLU(0.2, inplace=True)
+        self.drop2 = nn.Dropout(dropout_prob) if use_dropout else nn.Identity()
+
+        self.upsample3 = nn.Upsample(scale_factor=2, mode="nearest")  # [32, 32] → [32, 64]
+        self.conv3 = nn.Conv1d(32, 16, kernel_size=5, padding=2)
+        self.act3 = nn.LeakyReLU(0.2, inplace=True)
+        self.drop3 = nn.Dropout(dropout_prob) if use_dropout else nn.Identity()
+
+        # 3. Compute flattened size with dummy pass
+        with torch.no_grad():
+            dummy_z = torch.zeros(1, latent_dim)
+            h = self.fc(dummy_z)
+            x = h.view(1, 128, 16)
+            x = self.upsample1(x)
+            x = self.conv1(x)
+            x = self.act1(x)
+            x = self.drop1(x)
+            x = self.upsample2(x)
+            x = self.conv2(x)
+            x = self.act2(x)
+            x = self.drop2(x)
+            x = self.upsample3(x)
+            x = self.conv3(x)
+            x = self.act3(x)
+            x = self.drop3(x)
+            flattened_dim = x.view(1, -1).shape[1]
+
+        # 4. Final MLP head
+        self.final_fc = nn.Sequential(
+            nn.Linear(flattened_dim + cond_dim, 1028),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(1028, output_dim),
+            nn.Sigmoid()
         )
 
-        # Build the upsampling Conv1D stack
-        layers = []
-        in_ch = self.init_channels
-        for i in range(num_layers - 1):
-            out_ch = max(in_ch // 2, 8)
-            layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
-            layers.append(nn.Conv1d(in_ch, out_ch, kernel_size=5, padding=2))
-            if self.use_bn:
-                layers.append(nn.BatchNorm1d(out_ch))
-            layers.append(nn.LeakyReLU(0.2))
-            in_ch = out_ch
-
-        # Final upsample to full resolution
-        layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
-        layers.append(nn.Conv1d(in_ch, 1, kernel_size=5, padding=2))
-        layers.append(nn.Sigmoid())  # normalize output between [0,1]
-
-        self.deconv = nn.Sequential(*layers)
-
     def forward(self, z, cond=None):
-        """
-        Args:
-            z: latent tensor [batch, latent_dim]
-            cond: optional conditional tensor [batch, cond_dim]
-        Returns:
-            x_gen: generated output [batch, output_dim]
-        """
+        # 1. Linear layer: latent → 2048
+        h = self.fc(z)  # [batch, 2048]
+        # Reshape to [batch, 128, 16]
+        x = h.view(z.size(0), 128, 16)
+
+        # 2. CNN Upsampling blocks
+        x = self.upsample1(x)  # [batch, 128, 16] → [batch, 128, 32]
+        x = self.conv1(x)
+        x = self.act1(x)
+        x = self.drop1(x)
+
+        x = self.upsample2(x)  # [batch, 64, 32] → [batch, 64, 64]
+        x = self.conv2(x)
+        x = self.act2(x)
+        x = self.drop2(x)
+
+        x = self.upsample3(x)  # [batch, 32, 64] → [batch, 32, 128]
+        x = self.conv3(x)
+        x = self.act3(x)
+        x = self.drop3(x)
+
+        # 3. Flatten and concatenate condition
+        x = x.view(z.size(0), -1)
         if cond is not None:
-            z = torch.cat([z, cond], dim=1)
+            x = torch.cat([x, cond], dim=1)
 
-        # Project and reshape
-        h = self.fc(z)
-        h = h.view(z.size(0), self.init_channels, self.init_length)
-
-        # Progressive upsampling
-        x = self.deconv(h)
-
-        # Adjust output to exact target length
-        if x.size(-1) > self.output_dim:
-            x = x[..., :self.output_dim]
-        elif x.size(-1) < self.output_dim:
-            pad_amt = self.output_dim - x.size(-1)
-            x = F.pad(x, (0, pad_amt))
-
-        return x.view(x.size(0), -1)
+        # 4. Final MLP head
+        out = self.final_fc(x)
+        return out
 
 # Discriminator: D(x, y)
 class Discriminator(nn.Module):
@@ -158,8 +175,6 @@ class Discriminator(nn.Module):
         out = torch.sigmoid(self.fc_out(x))
         return out
     
-
-
 ################ GAN ###############
 class GAN(nn.Module):
     """
