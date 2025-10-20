@@ -51,8 +51,14 @@ class MLPDecoder1D_Generator(nn.Module):
         return self.net(z)
 
 class CNNDecoder1D_Generator(nn.Module):
-    """ Simple 1D CNN Generator for spectra synthesis. """
-
+    """
+    Simple 1D CNN Generator for spectra synthesis.
+    Architecture:
+      1. Linear layer expands latent vector to feature map.
+      2. Three upsampling + Conv1d blocks increase length and reduce channels.
+      3. Conditional vector (if provided) is concatenated after convolutions.
+      4. Final MLP head projects to output spectrum.
+    """
     def __init__(
         self,
         latent_dim=32,
@@ -68,73 +74,49 @@ class CNNDecoder1D_Generator(nn.Module):
         self.use_dropout = use_dropout
         self.dropout_prob = dropout_prob
 
-        # 1. Linear: latent_dim → 2048
-        self.fc = nn.Linear(latent_dim, 2048)
+        # 1. Linear: latent_dim → 2048, reshape to [batch, 128, 16]
+        self.fc = nn.Linear(latent_dim, 128 * 16)
 
-        # 2. CNN Upsampling blocks
-        self.upsample1 = nn.Upsample(scale_factor=2, mode="nearest")  # 2048 → [128, 16]
-        self.conv1 = nn.Conv1d(128, 64, kernel_size=5, padding=2)
-        self.act1 = nn.LeakyReLU(0.2, inplace=True)
-        self.drop1 = nn.Dropout(dropout_prob) if use_dropout else nn.Identity()
+        # 2. CNN Upsampling blocks (modularized)
+        up_block_specs = [
+            (128, 64),  # [128, 16] → [64, 32]
+            (64, 32),   # [64, 32] → [32, 64]
+            (32, 16),   # [32, 64] → [16, 128]
+        ]
+        self.upsample_blocks = nn.ModuleList()
+        for in_ch, out_ch in up_block_specs:
+            block = nn.Sequential(
+                nn.Upsample(scale_factor=2, mode="nearest"),
+                nn.Conv1d(in_ch, out_ch, kernel_size=5, padding=2),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Dropout(dropout_prob) if use_dropout else nn.Identity()
+            )
+            self.upsample_blocks.append(block)
 
-        self.upsample2 = nn.Upsample(scale_factor=2, mode="nearest")  # [64, 16] → [64, 32]
-        self.conv2 = nn.Conv1d(64, 32, kernel_size=5, padding=2)
-        self.act2 = nn.LeakyReLU(0.2, inplace=True)
-        self.drop2 = nn.Dropout(dropout_prob) if use_dropout else nn.Identity()
-
-        self.upsample3 = nn.Upsample(scale_factor=2, mode="nearest")  # [32, 32] → [32, 64]
-        self.conv3 = nn.Conv1d(32, 16, kernel_size=5, padding=2)
-        self.act3 = nn.LeakyReLU(0.2, inplace=True)
-        self.drop3 = nn.Dropout(dropout_prob) if use_dropout else nn.Identity()
-
-        # 3. Compute flattened size with dummy pass
-        with torch.no_grad():
-            dummy_z = torch.zeros(1, latent_dim)
-            h = self.fc(dummy_z)
-            x = h.view(1, 128, 16)
-            x = self.upsample1(x)
-            x = self.conv1(x)
-            x = self.act1(x)
-            x = self.drop1(x)
-            x = self.upsample2(x)
-            x = self.conv2(x)
-            x = self.act2(x)
-            x = self.drop2(x)
-            x = self.upsample3(x)
-            x = self.conv3(x)
-            x = self.act3(x)
-            x = self.drop3(x)
-            flattened_dim = x.view(1, -1).shape[1]
-
-        # 4. Final MLP head
+        # 3. Final MLP head (input: 16*128 + cond_dim)
         self.final_fc = nn.Sequential(
-            nn.Linear(flattened_dim + cond_dim, 1028),
+            nn.Linear(16 * 128 + cond_dim, 1024),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(1028, output_dim),
+            nn.Linear(1024, output_dim),
             nn.Sigmoid()
         )
 
     def forward(self, z, cond=None):
-        # 1. Linear layer: latent → 2048
-        h = self.fc(z)  # [batch, 2048]
-        # Reshape to [batch, 128, 16]
+        """
+        Forward pass for CNN-based generator.
+        Args:
+            z (Tensor): Latent noise [batch, latent_dim]
+            cond (Tensor, optional): Conditional vector [batch, cond_dim]
+        Returns:
+            out (Tensor): Generated spectrum [batch, output_dim]
+        """
+        # 1. Latent vector → feature map
+        h = self.fc(z)  # [batch, 128*16]
         x = h.view(z.size(0), 128, 16)
 
-        # 2. CNN Upsampling blocks
-        x = self.upsample1(x)  # [batch, 128, 16] → [batch, 128, 32]
-        x = self.conv1(x)
-        x = self.act1(x)
-        x = self.drop1(x)
-
-        x = self.upsample2(x)  # [batch, 64, 32] → [batch, 64, 64]
-        x = self.conv2(x)
-        x = self.act2(x)
-        x = self.drop2(x)
-
-        x = self.upsample3(x)  # [batch, 32, 64] → [batch, 32, 128]
-        x = self.conv3(x)
-        x = self.act3(x)
-        x = self.drop3(x)
+        # 2. CNN upsampling path (modularized)
+        for block in self.upsample_blocks:
+            x = block(x)
 
         # 3. Flatten and concatenate condition
         x = x.view(z.size(0), -1)
