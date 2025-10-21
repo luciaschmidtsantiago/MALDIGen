@@ -236,6 +236,7 @@ def compute_mean_spectra_per_label(loader, device=None, logger=None):
     all_x, all_y = [], []
 
     for batch in loader:
+        # Support batches with more than two elements (e.g., (x, y, ...))
         if isinstance(batch, (list, tuple)):
             x, y = batch[0], batch[1]
         else:

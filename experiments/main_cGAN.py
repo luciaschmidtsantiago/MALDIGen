@@ -38,7 +38,9 @@ def main():
     # Logging
     name = args.config.split('/')[-1].split('.')[0]
     mode = 'training' if args.train else 'evaluation'
-    results_path = os.path.join(config['results_dir'], name)
+    gan_results_dir = os.path.join(config['results_dir'], 'gan')
+    os.makedirs(gan_results_dir, exist_ok=True)
+    results_path = os.path.join(gan_results_dir, name)
     logger = setuplogging(name, mode, results_path)
     logger.info(f"Using config file: {args.config}")
 

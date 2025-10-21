@@ -326,15 +326,16 @@ def training_gan(model, train_loader, val_loader, criterion, optimizer_G, optimi
         num_batches = 0
 
         for batch in train_loader:
-
-            # Check whether batch contains labels (conditional GAN)
-            if len(batch) == 3:
+            # Check whether training is conditional
+            if model.__class__.__name__== 'GAN':
+                x_real = batch[0]; y_species = None; y_amr = None
+            elif len(batch) == 3:
                 x_real, y_species, y_amr = batch
             elif len(batch) == 2:
                 x_real, y_species = batch
                 y_amr = None
             else:
-                x_real = batch[0]; y_species = None; y_amr = None
+                raise ValueError("Unexpected batch format in GAN training.")
 
             x_real = x_real.to(device)
             if y_species is not None: y_species = y_species.to(device)
@@ -346,10 +347,17 @@ def training_gan(model, train_loader, val_loader, criterion, optimizer_G, optimi
 
             # === Discriminator ===
             z = torch.randn(batch_size, config['latent_dim']).to(device)
-            x_fake = model.forward_G(z, y_species, y_amr).detach()
-
-            d_real = model.forward_D(x_real, y_species, y_amr)
-            d_fake = model.forward_D(x_fake, y_species, y_amr)
+            if y_species is None and y_amr is None:
+                x_fake = model.forward_G(z).detach()
+                d_real = model.forward_D(x_real)
+                d_fake = model.forward_D(x_fake)
+            else:
+                x_fake = model.forward_G(z, y_species, y_amr).detach()
+                d_real = model.forward_D(x_real, y_species, y_amr)
+                d_fake = model.forward_D(x_fake, y_species, y_amr)
+            # Ensure discriminator outputs are [batch_size, 1]
+            d_real = d_real.view(-1, 1)
+            d_fake = d_fake.view(-1, 1)
             d_loss = criterion(d_real, valid) + criterion(d_fake, fake)
 
             optimizer_D.zero_grad()
@@ -358,8 +366,14 @@ def training_gan(model, train_loader, val_loader, criterion, optimizer_G, optimi
 
             # === Generator ===
             z = torch.randn(batch_size, config['latent_dim']).to(device)
-            x_gen = model.forward_G(z, y_species, y_amr)
-            d_gen = model.forward_D(x_gen, y_species, y_amr)
+            if y_species is None and y_amr is None:
+                x_gen = model.forward_G(z)
+                d_gen = model.forward_D(x_gen)
+            else:
+                x_gen = model.forward_G(z, y_species, y_amr)
+                d_gen = model.forward_D(x_gen, y_species, y_amr)
+            # Ensure generator output for discriminator is [batch_size, 1]
+            d_gen = d_gen.view(-1, 1)
             g_loss = criterion(d_gen, valid)
 
             optimizer_G.zero_grad()
@@ -432,13 +446,16 @@ def evaluation_gan(model, loader, criterion, latent_dim, device):
 
     with torch.no_grad():
         for batch in loader:
-            if len(batch) == 3:
+            # Check whether training is conditional
+            if model.__class__.__name__== 'GAN':
+                x_real = batch[0]; y_species = None; y_amr = None
+            elif len(batch) == 3:
                 x_real, y_species, y_amr = batch
             elif len(batch) == 2:
                 x_real, y_species = batch
                 y_amr = None
             else:
-                x_real = batch[0]; y_species = None; y_amr = None
+                raise ValueError("Unexpected batch format in GAN training.")
 
             x_real = x_real.to(device)
             if y_species is not None: y_species = y_species.to(device)
@@ -449,10 +466,15 @@ def evaluation_gan(model, loader, criterion, latent_dim, device):
             fake = torch.zeros(batch_size, 1, device=device)
 
             z = torch.randn(batch_size, latent_dim, device=device)
-            x_fake = model.forward_G(z, y_species, y_amr)
-
-            d_real = model.forward_D(x_real, y_species, y_amr)
-            d_fake = model.forward_D(x_fake, y_species, y_amr)
+            # Call generator conditionally with labels if they exist (mirrors training_gan)
+            if y_species is None and y_amr is None:
+                x_fake = model.forward_G(z)
+                d_real = model.forward_D(x_real)
+                d_fake = model.forward_D(x_fake)
+            else:
+                x_fake = model.forward_G(z, y_species, y_amr)
+                d_real = model.forward_D(x_real, y_species, y_amr)
+                d_fake = model.forward_D(x_fake, y_species, y_amr)
 
             d_loss = criterion(d_real, valid) + criterion(d_fake, fake)
             g_loss = criterion(d_fake, valid)

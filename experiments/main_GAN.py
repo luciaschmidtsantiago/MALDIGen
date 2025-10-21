@@ -26,7 +26,7 @@ from utils.test_utils import write_metadata_csv
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--config', default='configs/gan_MLP3_32.yaml', type=str)
-    p.add_argument('--train', action='store_true', default=False, help='Run training (default: only evaluation/visualization)')
+    p.add_argument('--train', action='store_true', default=True, help='Run training (default: only evaluation/visualization)')
     return p.parse_args()
 
 def main():
@@ -38,7 +38,10 @@ def main():
     # Logging
     name = args.config.split('/')[-1].split('.')[0]
     mode = 'training' if args.train else 'evaluation'
-    results_path = os.path.join(config['results_dir'], name)
+    # Ensure results are stored in results/gan/
+    gan_results_dir = os.path.join(config['results_dir'], 'gan')
+    os.makedirs(gan_results_dir, exist_ok=True)
+    results_path = os.path.join(gan_results_dir, name)
     logger = setuplogging(name, mode, results_path)
     logger.info(f"Using config file: {args.config}")
 
