@@ -52,7 +52,10 @@ def main():
     # Logging
     name = args.config.split('/')[-1].split('.')[0]
     mode = 'training' if args.train else 'evaluation'
-    results_path = os.path.join(config['results_dir'], name)
+    # Ensure results are stored in results/vae/
+    vae_results_dir = os.path.join(config['results_dir'], 'vae')
+    os.makedirs(vae_results_dir, exist_ok=True)
+    results_path = os.path.join(vae_results_dir, name)
     logger = setuplogging(name, mode, results_path)
     logger.info(f"Using config file: {args.config}")   
 
@@ -71,20 +74,19 @@ def main():
     # Set up model
     if encoder == 'MLPEncoder1D':
         encoder = MLPEncoder1D(D, num_layers, M, cond_dim=cond_dim).to(device)
-        # logger.info("\nENCODER:\n" + str(summary(encoder, torch.zeros(1, D + cond_dim).to(device), show_input=False, show_hierarchical=False)))
+        logger.info("\nENCODER:\n" + str(summary(encoder, torch.zeros(1, D + cond_dim).to(device), show_input=False, show_hierarchical=False)))
     elif encoder == 'CNNEncoder1D':
         encoder = CNNEncoder1D(M, (1, D), num_layers=num_layers, max_pool=max_pool, cond_dim=cond_dim).to(device)
-        #logger.info("\nENCODER:\n" + str(summary(encoder, torch.zeros(1, D).to(device), show_input=False, show_hierarchical=False)))
+        logger.info("\nENCODER:\n" + str(summary(encoder, torch.zeros(1, D).to(device), show_input=False, show_hierarchical=False)))
     elif encoder == 'CNNAttenEncoder':
         encoder = CNNAttenEncoder(D, M, num_heads, num_layers).to(device)
-        
 
     if decoder == 'MLPDecoder1D':
         decoder = MLPDecoder1D(M, num_layers, D, cond_dim=cond_dim).to(device)
-        #logger.info("\nDECODER:\n" + str(summary(decoder, torch.zeros(1, M + cond_dim).to(device), show_input=False, show_hierarchical=False)))
+        logger.info("\nDECODER:\n" + str(summary(decoder, torch.zeros(1, M + cond_dim).to(device), show_input=False, show_hierarchical=False)))
     elif decoder == 'CNNDecoder1D':
         decoder = CNNDecoder1D(M, (1, D), num_layers=num_layers, max_pool=max_pool, cond_dim=cond_dim).to(device)
-        #logger.info("\nDECODER:\n" + str(summary(decoder, torch.zeros(1, M + cond_dim).to(device), show_input=False, show_hierarchical=False)))
+        logger.info("\nDECODER:\n" + str(summary(decoder, torch.zeros(1, M + cond_dim).to(device), show_input=False, show_hierarchical=False)))
     elif decoder == 'CNNAttenDecoder':
         decoder = CNNAttenDecoder(D, M, num_heads, num_layers).to(device)
 
@@ -143,16 +145,6 @@ def main():
 
         # Write PIKE results to CSV
         write_pike_csv(name, class_pike, mean_pike, config, label_order=sorted(np.unique(test.labels)))
-
-
-    # Average reconstruction time over validation data
-    # avg_recon_time, avg_gen_time = compute_val_time_metrics(model, val.data.to(device), config)
-    # logger.info(f"Average reconstruction time per spectrum: {avg_recon_time:.6f} sec")
-    # logger.info(f"Average generation time per spectrum: {avg_gen_time:.6f} sec")
-
-    # # Update metadata
-    # metadata['avg_reconstruction_time'] = avg_recon_time
-    # metadata['avg_generation_time'] = avg_gen_time
 
     # Save metadata to config YAML
     config['metadata'] = metadata

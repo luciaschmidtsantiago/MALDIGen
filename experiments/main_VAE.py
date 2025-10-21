@@ -44,7 +44,10 @@ def main():
     # Logging
     name = args.config.split('/')[-1].split('.')[0]
     mode = 'training' if args.train else 'evaluation'
-    results_path = os.path.join(config['results_dir'], name)
+    # Ensure results are stored in results/vae/
+    vae_results_dir = os.path.join(config['results_dir'], 'vae')
+    os.makedirs(vae_results_dir, exist_ok=True)
+    results_path = os.path.join(vae_results_dir, name)
     logger = setuplogging(name, mode, results_path)
     logger.info(f"Using config file: {args.config}")   
 

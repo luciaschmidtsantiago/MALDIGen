@@ -183,21 +183,25 @@ def compute_val_time_metrics(model, val, config):
     avg_recon_time = None
     avg_gen_time = None
 
-    # --- Average reconstruction time ---
+    # --- Average reconstruction time (batched) ---
     if val_data is not None:
-        X = torch.tensor(val_data, dtype=torch.float32).to(device)
         model.eval()
+        n_samples = val_data.shape[0]
+        recon_times = []
         with torch.no_grad():
-            start = time.time()
-            if hasattr(model.encoder, "forward"):
-                mu, _ = model.encoder.forward(X)
-            else:
-                mu = model.encoder(X)
-                mu = mu[:, :mu.size(1) // 2]  # assume [mu, logvar] if not split
-            x_hat = model.decoder(mu)
-            torch.cuda.synchronize() if device.type == 'cuda' else None
-            end = time.time()
-        avg_recon_time = (end - start) / len(val_data)
+            for i in range(0, n_samples, batch_size):
+                X = torch.tensor(val_data[i:i+batch_size], dtype=torch.float32).to(device)
+                start = time.time()
+                if hasattr(model.encoder, "forward"):
+                    mu, _ = model.encoder.forward(X)
+                else:
+                    mu = model.encoder(X)
+                    mu = mu[:, :mu.size(1) // 2]  # assume [mu, logvar] if not split
+                x_hat = model.decoder(mu)
+                torch.cuda.synchronize() if device.type == 'cuda' else None
+                end = time.time()
+                recon_times.append((end - start) / X.shape[0])
+        avg_recon_time = np.mean(recon_times) if recon_times else None
 
     # --- Infer latent_dim from model ---
     latent_dim = getattr(model, "latent_dim", None)
