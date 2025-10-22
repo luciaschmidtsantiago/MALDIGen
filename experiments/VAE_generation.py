@@ -13,15 +13,15 @@ import yaml
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Custom modules
-from models.VAE import ConditionalVAE, generate_spectra_per_label
+from models.VAE import ConditionalVAE, generate_spectra_per_label_cvae
 from models.Networks import MLPEncoder1D, MLPDecoder1D, CNNDecoder1D, CNNEncoder1D
 from dataloader.data import load_data, get_dataloaders, compute_mean_spectra_per_label
 from utils.training_utils import setuplogging
-from utils.visualization import plot_generated_spectra_per_label, plot_joint_tsne, plot_tsne_from_saved
+from utils.visualization import plot_generated_spectra_per_label, plot_joint_tsne, plot_tsne_from_saved, plot_meanVSgenerated
 
 # PIKE matrix and generative metrics
 from losses.PIKE_GPU import calculate_pike_matrix
-from losses.GenMALDI_Metrics import mmd_pike, jaccard_topk, class_distance, neighbour_distance, save_generative_metrics_csv
+from losses.GenMALDI_Metrics import save_generative_metrics_csv
 
 
 
@@ -46,7 +46,8 @@ def main():
     config = yaml.safe_load(open(args.config))
     name = os.path.splitext(os.path.basename(args.config))[0]
     mode = 'generation'
-    results_path = os.path.join(config['results_dir'], name)
+    # Store results in results/vae/<experiment_name>/
+    results_path = os.path.join('results', 'vae', name)
     plots_path = os.path.join(results_path, 'plots')
     os.makedirs(plots_path, exist_ok=True)
 
@@ -63,7 +64,7 @@ def main():
     logger.info(f"Loading pretrained model from: {pretrained_model}")
 
     # Data loading
-    get_labels = config.get('get_labels', False)
+    get_labels = config.get('get_labels', True)
     batch_size = config.get('batch_size', 128)
     train, val, test, ood = load_data(
         config['pickle_marisma'],
@@ -73,8 +74,8 @@ def main():
     )
     train_loader, val_loader, test_loader, ood_loader = get_dataloaders(train, val, test, ood, batch_size)
 
-    # Compute mean spectra for each label in test set
-    mean_spectra_test, _, _ = compute_mean_spectra_per_label(test_loader, device, logger)
+    # Compute mean spectra for each label in train set
+    mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device, logger)
 
     # Model architecture parameters
     D = config['input_dim']
@@ -115,30 +116,58 @@ def main():
     # Load pretrained weights
     ckpt = torch.load(pretrained_model, map_location=device)
     model.load_state_dict(ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt)
-    model.eval()
     logger.info(f"Model {model.__class__.__name__} successfully loaded and set to eval mode.")
 
+
+
+
+    ######################################## GENERATION PIPELINE ########################################
+    model.eval()
     # Label correspondence for mapping
     label_correspondence = train.label_convergence
     logger.info(f"Label correspondence: {label_correspondence}")
+    label_ids = sorted(label_correspondence.keys())
+    label_names = [label_correspondence[i] for i in label_ids]
+    logger.info(f"Generating conditional samples for {len(label_names)} labels: {label_names}")
+
+    # Compute mean spectra for each label in train set
+    mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device, logger)
+    mean_spectra_list = [mean_spectra_train[i].squeeze(0) for i in range(len(mean_spectra_train))]
 
     # Number of synthetic spectra to generate per label
     n_generate = args.n_generate
-    generated_spectra = generate_spectra_per_label(model, label_correspondence, n_generate, device=device)
+    generated_spectra = generate_spectra_per_label_cvae(model, label_correspondence, n_generate, device)
 
-    # Compute PIKE matrix (saves CSV if saving=True)
-    # Keep only 50 spectra per label for PIKE calculation
-    generated_spectra_short = {label: spectra[:50] for label, spectra in generated_spectra.items()}
-    calculate_pike_matrix(generated_spectra_short, mean_spectra_test, label_correspondence, device, results_path=results_path, saving=True)
 
-    # Plot generated spectra for each label
+    # ---- COMPUTE PIKE MATRIX
+    logger.info("\n--- Computing PIKE matrix for generated spectra ---")
+    calculate_pike_matrix(generated_spectra, mean_spectra_train, label_correspondence, device, results_path=results_path, saving=True)
+
+
+    # ---- PLOT GENERATED SPECTRA PER LABEL
     n_plot = 5
     for label_name, spectra in generated_spectra.items():
-        # Find the corresponding mean spectrum for this label
-        mean_spec = mean_spectra_test[[k for k, v in label_correspondence.items() if v == label_name][0]].cpu().numpy().squeeze()
+        # Find the corresponding mean spectrum for this label (from train set)
+        mean_spec = mean_spectra_train[[k for k, v in label_correspondence.items() if v == label_name][0]].cpu().numpy().squeeze()
         plot_generated_spectra_per_label(spectra, mean_spec, label_name, n_plot, plots_path)
 
-    # --- Joint t-SNE for all sets and generated ---
+
+    # ---- PLOT GENERATED SPECTRA WRT ALL LABEL MEANS
+    with torch.no_grad():
+        for label_id in label_ids:
+            label_name = label_correspondence[label_id]
+
+            # Prepare conditional inputs and generate sample
+            y_species = torch.tensor([label_id], dtype=torch.long, device=device)
+            sample = model.sample(y_species)
+
+            # Save plot comparing generated vs mean spectrum
+            saving_path = os.path.join(plots_path, f'cVAE_generated_{label_name}.png')
+            plot_meanVSgenerated(sample, mean_spectra_list, saving_path)
+            logger.info(f"Generated sample for {label_name} → saved to {saving_path}")
+
+
+    # ---- PLOT t-SNE for all sets and generated 
     datasets_dict = {
         'train': train,
         'val': val,
@@ -148,8 +177,6 @@ def main():
     # Build label_name_to_index mapping from label_correspondence
     label_name_to_index = {v: k for k, v in label_correspondence.items()}
     plot_joint_tsne(model, datasets_dict, generated_spectra, label_name_to_index, n_samples=50, results_path=plots_path, logger=logger)
-
-    # --- Additional t-SNE plots from saved coordinates ---
     tsne_path = os.path.join(plots_path, "joint_tsne_coords.npz")
     # 1. Training vs Synthetic
     plot_tsne_from_saved(tsne_path, domains_to_plot=["train", "synthetic"], results_path=plots_path, logger=logger)
@@ -158,20 +185,16 @@ def main():
     # 3. OOD vs Synthetic
     plot_tsne_from_saved(tsne_path, domains_to_plot=["ood", "synthetic"], results_path=plots_path, logger=logger)
 
-    # -----------------------------
-    # Calculate generative metrics and save per-label CSV
-    # -----------------------------
-    logger.info("\n--- Generative Metrics (PIKE, MMD, Jaccard, Class/Neighbor Distance) ---")
-    # Ensure all spectra are numpy arrays (on CPU) for metrics
-    generated_spectra_short_np = {}
-    for label, arr in generated_spectra_short.items():
-        if isinstance(arr, torch.Tensor):
-            arr = arr.detach().cpu().numpy()
-        generated_spectra_short_np[label] = arr
-    save_generative_metrics_csv(generated_spectra_short_np, mean_spectra_test, results_path)
 
-    
-
+    # # ---- Generative Metrics (PIKE, MMD, Class/Neighbor Distance)
+    # logger.info("\n--- Generative Metrics (PIKE, MMD, Jaccard, Class/Neighbor Distance) ---")
+    # # Ensure all spectra are numpy arrays (on CPU) for metrics
+    # generated_spectra_np = {}
+    # for label, arr in generated_spectra.items():
+    #     if isinstance(arr, torch.Tensor):
+    #         arr = arr.detach().cpu().numpy()
+    #     generated_spectra_np[label] = arr
+    # save_generative_metrics_csv(generated_spectra_np, mean_spectra_train, results_path)
 
 if __name__ == "__main__":
     main()

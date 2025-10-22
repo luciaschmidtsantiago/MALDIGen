@@ -349,7 +349,7 @@ def plot_generated_spectra_per_label(generated_spectra, mean_spectrum, label_nam
 		ax.legend(loc='upper right', fontsize='small')
 	axes[-1].set_xlabel("m/z index")
 	plt.tight_layout()
-	plot_path = os.path.join(results_path, f"{label_name}_generated.png")
+	plot_path = os.path.join(results_path, f"Samples_{label_name}.png")
 	plt.savefig(plot_path)
 	plt.close(fig)
 	print(f"Saved combined plot: {plot_path}")
@@ -627,7 +627,7 @@ def training_curve_gan(history, results_path):
 
     print(f"Saved training curve to: {save_path}")
 
-def plot_gan_meanVSgenerated(generated_sample, mean_spectra, results_path):
+def plot_meanVSgenerated(generated_sample, mean_spectra, results_path):
 	"""
 	Plot one generated spectrum per label over its mean real spectrum (6 subplots total).
 	Each subplot shows the mean spectrum (color) and generated spectrum (light gray),

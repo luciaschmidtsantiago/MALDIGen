@@ -228,7 +228,7 @@ class ConditionalVAE(nn.Module):
         return self.decoder.sample(z, y_species, y_amr)
     
 # Utility: Generate n_samples per label from a ConditionalVAE
-def generate_spectra_per_label(model, label_correspondence, n_samples, device=None):
+def generate_spectra_per_label_cvae(model, label_correspondence, n_samples, device=None):
     """
     Generate n_samples spectra for each label using a ConditionalVAE.
     Args:
