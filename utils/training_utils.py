@@ -320,7 +320,10 @@ def training_gan(model, train_loader, val_loader, criterion, optimizer_G, optimi
                "D_val": [], "G_val": []}
     
 
+
     for epoch in range(config['epochs']):
+        # Ensure model is in training mode for each epoch
+        model.train()
         epoch_d_loss = 0.0
         epoch_g_loss = 0.0
         num_batches = 0
@@ -551,15 +554,5 @@ def run_experiment_gan(model, loaders, device, config, results_path, logger):
     }
 
     training_curve_gan(history, results_path)
-
-    logger.info("=" * 80)
-    logger.info("EVALUATION")
-    logger.info("=" * 80)
-
-    val_loss, val_d, val_g = evaluation_gan(model, val_loader, criterion, config['latent_dim'], device)
-    logger.info(f"Validation loss: {val_loss:.4f} (D={val_d:.4f}, G={val_g:.4f})")
-
-    test_loss, test_d, test_g = evaluation_gan(model, test_loader, criterion, config['latent_dim'], device)
-    logger.info(f"Test loss: {test_loss:.4f} (D={test_d:.4f}, G={test_g:.4f})")
 
     return generator, discriminator, metadata

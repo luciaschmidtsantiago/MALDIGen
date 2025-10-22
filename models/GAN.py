@@ -240,6 +240,29 @@ class ConditionalGAN(nn.Module):
     def forward_D(self, x, y_species=None, y_amr=None):
         cond = self.get_cond(y_species, y_amr) if y_species is not None else None
         return self.discriminator(x, cond)
+    
+def generate_spectra_per_label_cgan(model, label_correspondence, n_samples, latent_dim, device=None):
+    """
+    Generate n_samples spectra for each label using a ConditionalGAN.
+    Args:
+        model: Trained ConditionalGAN (must be in eval mode).
+        label_correspondence: dict mapping label indices to label names (or vice versa).
+        n_samples: Number of spectra to generate per label.
+        latent_dim: Dimension of the latent noise vector.
+        device: torch.device (optional, will use model's device if None).
+    Returns:
+        dict: {label_name: tensor of generated spectra}
+    """
+    model.eval()
+    device = device or next(model.parameters()).device
+    results = {}
+    for idx, label_name in label_correspondence.items():
+        y_species = torch.full((n_samples,), idx, dtype=torch.long, device=device)
+        z = torch.randn(n_samples, latent_dim, device=device)
+        with torch.no_grad():
+            generated = model.forward_G(z, y_species)
+        results[label_name] = generated.detach().cpu()
+    return results
 
 
 

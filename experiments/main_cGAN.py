@@ -16,17 +16,21 @@ from pytorch_model_summary import summary
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator, ConditionalGAN
+from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator, ConditionalGAN, generate_spectra_per_label_cgan
 from dataloader.data import compute_mean_spectra_per_label, load_data, get_dataloaders
 from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan
-from utils.visualization import plot_gan_meanVSgenerated
+from utils.visualization import plot_generated_spectra_per_label, plot_meanVSgenerated
+from losses.PIKE_GPU import calculate_pike_matrix
 from utils.test_utils import write_metadata_csv
 
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--config', default='configs/cgan_CNN3_32.yaml', type=str)
-    p.add_argument('--train', action='store_true', default=True, help='Run training (default: only evaluation/visualization)')
+    p.add_argument('--config', default='configs/cgan_MLP3_32.yaml', type=str)
+    p.add_argument('--train', action='store_true', default=False, help='Run training')
+    p.add_argument('--evaluation', action='store_true', default=False, help='Run evaluation (default: train and eval only)')
+    p.add_argument('--generation', action='store_true', default=False, help='Run evaluation (default: train and eval only)')
+    p.add_argument('--n_generate', type=int, default=500, help="Number of synthetic spectra to generate per label")
     return p.parse_args()
 
 def main():
@@ -143,57 +147,89 @@ def main():
         logger.info(f"Loaded pretrained generator from {pretrained_generator}")
         logger.info(f"Loaded pretrained discriminator from {pretrained_discriminator}")
 
+    
+    if args.evaluation:
+        logger.info("=" * 80)
+        logger.info("EVALUATION")
+        logger.info("=" * 80)   
         criterion = torch.nn.BCELoss()
+
         val_loss, val_d, val_g = evaluation_gan(model, val_loader, criterion, config['latent_dim'], device)
         logger.info(f"Validation loss: {val_loss:.4f} (D={val_d:.4f}, G={val_g:.4f})")
 
         test_loss, test_d, test_g = evaluation_gan(model, test_loader, criterion, config['latent_dim'], device)
         logger.info(f"Test loss: {test_loss:.4f} (D={test_d:.4f}, G={test_g:.4f})")
 
-    # Generate and plot spectra with respect to the TRAINING SET
-    mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device, logger)
-    mean_spectra_list = [mean_spectra_train[i].squeeze(0) for i in range(len(mean_spectra_train))]
-    print(f"Mean spectra per label (train set) computed for {len(mean_spectra_list)} labels.")
+    if args.generation:
+        model.eval()
 
-    label_correspondence = train.label_convergence
-    label_ids = sorted(label_correspondence.keys())
-    label_names = [label_correspondence[i] for i in label_ids]
-    logger.info(f"Generating conditional samples for {len(label_names)} labels: {label_names}")
+        logger.info("=" * 80)
+        logger.info("SPECTRA GENERATION")
+        logger.info("=" * 80)
 
-    gen_times = []
-    os.makedirs(os.path.join(results_path, 'plots'), exist_ok=True)
+        # --- GENERATION PIPELINE (from GAN_generation.py) ---
+        # Label correspondence for mapping
+        label_correspondence = train.label_convergence
+        logger.info(f"Label correspondence: {label_correspondence}")
+        label_ids = sorted(label_correspondence.keys())
+        label_names = [label_correspondence[i] for i in label_ids]
+        logger.info(f"Generating conditional samples for {len(label_names)} labels: {label_names}")
 
-    with torch.no_grad():
-        for label_id in label_ids:
-            label_name = label_correspondence[label_id]
+        # Compute mean spectra for each label in train set
+        mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device, logger)
+        mean_spectra_list = [mean_spectra_train[i].squeeze(0) for i in range(len(mean_spectra_train))]
 
-            # Prepare conditional inputs
-            y_species = torch.tensor([label_id], dtype=torch.long, device=device)
-            y_amr = None  # optional conditioning; keep as None if unused
+        # Number of synthetic spectra to generate per label
+        n_generate = args.n_generate
+        generated_spectra = generate_spectra_per_label_cgan(model, label_correspondence, n_generate, latent_dim, device)
 
-            # Latent noise vector
-            z = torch.randn(1, latent_dim, device=device)
+        # ---- COMPUTE PIKE MATRIX
+        logger.info("\n--- Computing PIKE matrix for generated spectra ---")
+        calculate_pike_matrix(generated_spectra, mean_spectra_train, label_correspondence, device, results_path=results_path, saving=True)
 
-            # Generate sample
-            start = time.time()
-            sample = model.forward_G(z, y_species, y_amr).squeeze(0)  # [image_dim]
-            end = time.time()
-            gen_times.append(end - start) 
+        # ---- PLOT GENERATED SPECTRA PER LABEL
+        n_plot = 5
+        plots_path = os.path.join(results_path, 'plots')
+        os.makedirs(plots_path, exist_ok=True)
+        for label_name, spectra in generated_spectra.items():
+            # Find the corresponding mean spectrum for this label (from train set)
+            mean_spec = mean_spectra_train[[k for k, v in label_correspondence.items() if v == label_name][0]].cpu().numpy().squeeze()
+            plot_generated_spectra_per_label(spectra, mean_spec, label_name, n_plot, plots_path)
 
-            # Save plot comparing generated vs mean spectrum
-            saving_path = os.path.join(results_path, 'plots', f'GAN_generated_{label_name}.png')
-            plot_gan_meanVSgenerated(sample, mean_spectra_list, saving_path)
-            logger.info(f"Generated sample for {label_name} → saved to {saving_path}")
 
-    # === Compute and log average generation time ===
-    avg_gen_time = sum(gen_times) / len(gen_times)
-    metadata['avg_generation_time'] = avg_gen_time
-    logger.info(f"Average generation time per spectrum: {avg_gen_time:.6f} sec")
+        # ---- PLOT GENERATED SPECTRA WRT ALL LABEL MEANS & TIME GENERATION ----
+        gen_times = []
+        with torch.no_grad():
+            for label_id in label_ids:
+                label_name = label_correspondence[label_id]
 
-    # Update metadata and save to config
-    config['metadata'] = metadata
-    with open(args.config, 'w') as f:
-        yaml.dump(config, f)
+                # Prepare conditional inputs
+                y_species = torch.tensor([label_id], dtype=torch.long, device=device)
+                y_amr = None  # optional conditioning; keep as None if unused
+
+                # Latent noise vector
+                z = torch.randn(1, latent_dim, device=device)
+
+                start = time.time()
+                sample = model.forward_G(z, y_species, y_amr).squeeze(0)  # [image_dim]
+                end = time.time()
+                gen_times.append(end - start)
+
+                # Save plot comparing generated vs mean spectrum
+                saving_path = os.path.join(plots_path, f'cGAN_generated_{label_name}.png')
+                plot_meanVSgenerated(sample, mean_spectra_list, saving_path)
+                logger.info(f"Generated sample for {label_name} → saved to {saving_path}")
+
+        # === Compute and log average generation time ===
+        if gen_times:
+            avg_gen_time = sum(gen_times) / len(gen_times)
+            metadata['avg_generation_time'] = avg_gen_time
+            logger.info(f"Average generation time per spectrum: {avg_gen_time:.6f} sec")
+
+        # Update metadata and save to config
+        config['metadata'] = metadata
+        with open(args.config, 'w') as f:
+            yaml.dump(config, f)
 
     # Append to CSV
     write_metadata_csv(metadata, config, name)

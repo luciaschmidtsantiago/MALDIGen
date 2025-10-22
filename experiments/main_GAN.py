@@ -19,7 +19,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator, GAN
 from dataloader.data import compute_mean_spectra_per_label, load_data, get_dataloaders
 from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan
-from utils.visualization import plot_gan_meanVSgenerated
+from utils.visualization import plot_meanVSgenerated
 from utils.test_utils import write_metadata_csv
 
 
@@ -27,6 +27,9 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--config', default='configs/gan_MLP3_32.yaml', type=str)
     p.add_argument('--train', action='store_true', default=True, help='Run training (default: only evaluation/visualization)')
+    p.add_argument('--evaluation', action='store_true', default=False, help='Run evaluation after training (default: False)')
+    p.add_argument('--generation', action='store_true', default=False, help='Generate and plot spectra after training/evaluation (default: False)')
+    p.add_argument('--n_generate', type=int, default=500, help="Number of synthetic spectra to generate per label")
     return p.parse_args()
 
 def main():
@@ -78,7 +81,7 @@ def main():
     if gen_arch == 'MLP':
         generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=0, use_bn=batch_norm).to(device)
     elif gen_arch == 'CNN':
-        generator = CNNDecoder1D_Generator(latent_dim, image_dim, num_layers=num_layers, use_bn=batch_norm).to(device)
+        generator = CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
     discriminator = Discriminator(image_dim, cond_dim=0, use_bn=batch_norm, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
 
     model = GAN(generator, discriminator).to(device)
@@ -131,6 +134,11 @@ def main():
         logger.info(f"Loaded pretrained generator from {pretrained_generator}")
         logger.info(f"Loaded pretrained discriminator from {pretrained_discriminator}")
 
+    if args.evaluation:
+        logger.info("=" * 80)
+        logger.info("EVALUATION")
+        logger.info("=" * 80)
+
         criterion = torch.nn.BCELoss()
         val_loss, val_d, val_g = evaluation_gan(model, val_loader, criterion, config['latent_dim'], device)
         logger.info(f"Validation loss: {val_loss:.4f} (D={val_d:.4f}, G={val_g:.4f})")
@@ -138,37 +146,45 @@ def main():
         test_loss, test_d, test_g = evaluation_gan(model, test_loader, criterion, config['latent_dim'], device)
         logger.info(f"Test loss: {test_loss:.4f} (D={test_d:.4f}, G={test_g:.4f})")
 
-    # Generate and plot spectra with respect to the TRAINING SET
-    mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device, logger)
-    mean_spectra_list = [mean_spectra_train[i].squeeze(0) for i in range(len(mean_spectra_train))]
-    print(f"Mean spectra per label (train set) computed for {len(mean_spectra_list)} labels.")
+    if args.generation:
+        model.eval()
 
-    n_samples = 5
-    gen_times = []
-    os.makedirs(os.path.join(results_path, 'plots'), exist_ok=True)
+        logger.info("=" * 80)
+        logger.info("SPECTRA GENERATION")
+        logger.info("=" * 80)
 
-    with torch.no_grad():
-        for i in range(n_samples):
 
-            # Generate a random latent vector
-            start = time.time()
-            z = torch.randn(1, latent_dim, device=device)
-            sample = model.forward_G(z).squeeze(0)  # [1, image_dim], already passed through sigmoid in generator
-            end = time.time()
-            gen_times.append(end - start)
+        # Generate and plot spectra with respect to the TRAINING SET
+        mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device, logger)
+        mean_spectra_list = [mean_spectra_train[i].squeeze(0) for i in range(len(mean_spectra_train))]
+        print(f"Mean spectra per label (train set) computed for {len(mean_spectra_list)} labels.")
 
-            # Save plot
-            saving_path = os.path.join(results_path, 'plots', f'GAN_generated_spectrum_{i+1}.png')
-            os.makedirs(os.path.dirname(saving_path), exist_ok=True)
-            plot_gan_meanVSgenerated(sample, mean_spectra_list, saving_path)
-    avg_gen_time = sum(gen_times) / n_samples
-    metadata['avg_generation_time'] = avg_gen_time
-    logger.info(f"Average generation time per spectrum: {avg_gen_time:.6f} sec")
+        n_samples = 5
+        gen_times = []
+        os.makedirs(os.path.join(results_path, 'plots'), exist_ok=True)
 
-    # Update metadata and save to config
-    config['metadata'] = metadata
-    with open(args.config, 'w') as f:
-        yaml.dump(config, f)
+        with torch.no_grad():
+            for i in range(n_samples):
+
+                # Generate a random latent vector
+                start = time.time()
+                z = torch.randn(1, latent_dim, device=device)
+                sample = model.forward_G(z).squeeze(0)  # [1, image_dim], already passed through sigmoid in generator
+                end = time.time()
+                gen_times.append(end - start)
+
+                # Save plot
+                saving_path = os.path.join(results_path, 'plots', f'GAN_generated_spectrum_{i+1}.png')
+                os.makedirs(os.path.dirname(saving_path), exist_ok=True)
+                plot_meanVSgenerated(sample, mean_spectra_list, saving_path)
+        avg_gen_time = sum(gen_times) / n_samples
+        metadata['avg_generation_time'] = avg_gen_time
+        logger.info(f"Average generation time per spectrum: {avg_gen_time:.6f} sec")
+
+        # Update metadata and save to config
+        config['metadata'] = metadata
+        with open(args.config, 'w') as f:
+            yaml.dump(config, f)
 
     # Append to CSV
     write_metadata_csv(metadata, config, name)
