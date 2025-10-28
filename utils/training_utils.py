@@ -1,18 +1,21 @@
 import os
-import csv
 import time
 import torch
-import json
 import logging
 import numpy as np
 import torch.nn as nn
-import matplotlib.pyplot as plt
 from datetime import datetime
-import torch.nn.functional as F
 
 from utils.visualization import save_training_curve, plot_nll_vs_kl, training_curve_gan
 from models.VAE import ConditionalVAE
-from utils.conditional_utils import get_condition
+
+def get_and_log(param, default, config, logger, name=None):
+    param_value = config.get(param, default)
+    if name is None:
+        logger.info(f"{param}: {param_value}")
+    else:
+        logger.info(f"{name}: {param_value}")
+    return param_value
 
 def setuplogging(name, mode, results_path):
     log_file = os.path.join(results_path, f"{mode}_{name}.log")
@@ -287,7 +290,7 @@ def evaluation_cond(test_loader, model_best):
 
 ######## GAN TRAINING ########
 
-def training_gan(model, train_loader, val_loader, criterion, optimizer_G, optimizer_D, device, config, logger=None):
+def training_gan(model, train_loader, val_loader, criterion, optimizer_G, optimizer_D, device, config, logger=None, weighted=None):
     """
     Train a GAN (both generator and discriminator) with early stopping based on validation loss.
     Args:
@@ -303,6 +306,7 @@ def training_gan(model, train_loader, val_loader, criterion, optimizer_G, optimi
             - 'epochs': max number of epochs.
             - 'max_patience': epochs to wait for improvement before stopping.
         logger (logging.Logger, optional): logger for info messages.
+        weighted (int, optional): number of classes for weighted training. If None, no weighting is applied.
     Returns:
         generator (nn.Module): trained generator model.
         discriminator (nn.Module): trained discriminator model.
@@ -312,6 +316,19 @@ def training_gan(model, train_loader, val_loader, criterion, optimizer_G, optimi
             - "D_val": list of discriminator validation losses
             - "G_val": list of generator validation losses
     """
+
+    # Compute class weights (once, before training loop)
+    if weighted is not None:
+        # Count samples per class in train_loader
+        class_counts = torch.zeros(weighted, dtype=torch.float32, device=device)
+        for _, y_species, *_ in train_loader:
+            y_species = y_species if y_species.ndim == 1 else y_species.argmax(dim=1)
+            for c in y_species:
+                class_counts[c] += 1
+        class_weights = 1.0 / (class_counts + 1e-8)
+        class_weights = class_weights / class_weights.sum() * len(class_weights)
+        class_weights = class_weights.to(device)
+
     
     best_val_loss = float('inf')
     patience_counter = 0
@@ -320,48 +337,47 @@ def training_gan(model, train_loader, val_loader, criterion, optimizer_G, optimi
                "D_val": [], "G_val": []}
     
 
-
     for epoch in range(config['epochs']):
-        # Ensure model is in training mode for each epoch
-        model.train()
         epoch_d_loss = 0.0
         epoch_g_loss = 0.0
         num_batches = 0
 
         for batch in train_loader:
-            # Check whether training is conditional
-            if model.__class__.__name__== 'GAN':
-                x_real = batch[0]; y_species = None; y_amr = None
-            elif len(batch) == 3:
+            # Check whether batch contains labels (conditional GAN)
+            if len(batch) == 3:
                 x_real, y_species, y_amr = batch
             elif len(batch) == 2:
                 x_real, y_species = batch
                 y_amr = None
             else:
-                raise ValueError("Unexpected batch format in GAN training.")
+                x_real = batch[0]; y_species = None; y_amr = None
 
             x_real = x_real.to(device)
             if y_species is not None: y_species = y_species.to(device)
             if y_amr is not None: y_amr = y_amr.to(device)
-            
+
             batch_size = x_real.size(0)
             valid = torch.ones(batch_size, 1).to(device)
             fake = torch.zeros(batch_size, 1).to(device)
 
             # === Discriminator ===
             z = torch.randn(batch_size, config['latent_dim']).to(device)
-            if y_species is None and y_amr is None:
-                x_fake = model.forward_G(z).detach()
-                d_real = model.forward_D(x_real)
-                d_fake = model.forward_D(x_fake)
+            x_fake = model.forward_G(z, y_species, y_amr).detach()
+            d_real = model.forward_D(x_real, y_species, y_amr)
+            d_fake = model.forward_D(x_fake, y_species, y_amr)
+
+            if weighted is not None and y_species is not None:
+                if y_species.ndim > 1:
+                    y_idx = y_species.argmax(dim=1)
+                else:
+                    y_idx = y_species
+                weights = class_weights[y_idx].unsqueeze(1)  # [batch, 1]
+
+                d_loss_real = (criterion(d_real, valid) * weights).mean()
+                d_loss_fake = (criterion(d_fake, fake) * weights).mean()
+                d_loss = d_loss_real + d_loss_fake
             else:
-                x_fake = model.forward_G(z, y_species, y_amr).detach()
-                d_real = model.forward_D(x_real, y_species, y_amr)
-                d_fake = model.forward_D(x_fake, y_species, y_amr)
-            # Ensure discriminator outputs are [batch_size, 1]
-            d_real = d_real.view(-1, 1)
-            d_fake = d_fake.view(-1, 1)
-            d_loss = criterion(d_real, valid) + criterion(d_fake, fake)
+                d_loss = criterion(d_real, valid) + criterion(d_fake, fake)
 
             optimizer_D.zero_grad()
             d_loss.backward()
@@ -369,14 +385,8 @@ def training_gan(model, train_loader, val_loader, criterion, optimizer_G, optimi
 
             # === Generator ===
             z = torch.randn(batch_size, config['latent_dim']).to(device)
-            if y_species is None and y_amr is None:
-                x_gen = model.forward_G(z)
-                d_gen = model.forward_D(x_gen)
-            else:
-                x_gen = model.forward_G(z, y_species, y_amr)
-                d_gen = model.forward_D(x_gen, y_species, y_amr)
-            # Ensure generator output for discriminator is [batch_size, 1]
-            d_gen = d_gen.view(-1, 1)
+            x_gen = model.forward_G(z, y_species, y_amr)
+            d_gen = model.forward_D(x_gen, y_species, y_amr)
             g_loss = criterion(d_gen, valid)
 
             optimizer_G.zero_grad()
@@ -449,16 +459,13 @@ def evaluation_gan(model, loader, criterion, latent_dim, device):
 
     with torch.no_grad():
         for batch in loader:
-            # Check whether training is conditional
-            if model.__class__.__name__== 'GAN':
-                x_real = batch[0]; y_species = None; y_amr = None
-            elif len(batch) == 3:
+            if len(batch) == 3:
                 x_real, y_species, y_amr = batch
             elif len(batch) == 2:
                 x_real, y_species = batch
                 y_amr = None
             else:
-                raise ValueError("Unexpected batch format in GAN training.")
+                x_real = batch[0]; y_species = None; y_amr = None
 
             x_real = x_real.to(device)
             if y_species is not None: y_species = y_species.to(device)
@@ -469,15 +476,10 @@ def evaluation_gan(model, loader, criterion, latent_dim, device):
             fake = torch.zeros(batch_size, 1, device=device)
 
             z = torch.randn(batch_size, latent_dim, device=device)
-            # Call generator conditionally with labels if they exist (mirrors training_gan)
-            if y_species is None and y_amr is None:
-                x_fake = model.forward_G(z)
-                d_real = model.forward_D(x_real)
-                d_fake = model.forward_D(x_fake)
-            else:
-                x_fake = model.forward_G(z, y_species, y_amr)
-                d_real = model.forward_D(x_real, y_species, y_amr)
-                d_fake = model.forward_D(x_fake, y_species, y_amr)
+            x_fake = model.forward_G(z, y_species, y_amr)
+
+            d_real = model.forward_D(x_real, y_species, y_amr)
+            d_fake = model.forward_D(x_fake, y_species, y_amr)
 
             d_loss = criterion(d_real, valid) + criterion(d_fake, fake)
             g_loss = criterion(d_fake, valid)
@@ -492,7 +494,7 @@ def evaluation_gan(model, loader, criterion, latent_dim, device):
 
     return total_loss, d_loss_avg, g_loss_avg
 
-def run_experiment_gan(model, loaders, device, config, results_path, logger):
+def run_experiment_gan(model, loaders, device, config, results_path, logger, weighted=None):
     """
     Run a full GAN training experiment with training and evaluation.
     Args:
@@ -520,6 +522,7 @@ def run_experiment_gan(model, loaders, device, config, results_path, logger):
     logger.info(f"TRAINING...:")
     logger.info("=" * 80)
 
+
     criterion = nn.BCELoss()
     optimizer_G = torch.optim.Adam(model.generator.parameters(), lr=config['lr_g'], betas=(0.5, 0.999))
     optimizer_D = torch.optim.Adam(model.discriminator.parameters(), lr=config['lr_d'], betas=(0.5, 0.999))
@@ -534,7 +537,8 @@ def run_experiment_gan(model, loaders, device, config, results_path, logger):
         optimizer_D=optimizer_D,
         device=device,
         config=config,
-        logger=logger
+        logger=logger,
+        weighted=weighted
     )
     training_time = time.time() - t_start
 
