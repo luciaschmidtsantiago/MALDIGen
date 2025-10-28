@@ -253,7 +253,7 @@ def generate_spectra_per_label_cgan(model, label_correspondence, n_samples, late
     Returns:
         dict: {label_name: tensor of generated spectra}
     """
-    model.eval()
+    # model.eval()
     device = device or next(model.parameters()).device
     results = {}
     for idx, label_name in label_correspondence.items():
