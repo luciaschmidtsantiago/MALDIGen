@@ -2,7 +2,6 @@
 import numpy as np
 import torch
 import pickle
-import logging
 import json
 import os
 from torch.utils.data import Dataset, DataLoader
@@ -25,17 +24,31 @@ class MALDI(Dataset):
             self.label_convergence = None
 
         self.labels = torch.tensor(labels, dtype=torch.long)
+        self.n_classes = int(self.labels.max().item()) + 1 if len(self.labels) > 0 else 0
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         spectrum = self.data[idx]
+        label = self.labels[idx]
+
         if self.normalization:
             min_val, max_val = spectrum.min(), spectrum.max()
             spectrum = (spectrum - min_val) / (max_val - min_val + 1e-8)
+           
+            # DIFFUSION MODEL NORMALIZATION
+            if self.normalization == 'diffusion':
+                spectrum = spectrum * 2.0 - 1.0
+                if spectrum.dim() == 1:
+                    spectrum = spectrum.unsqueeze(0)
+                label = label.long()
+                # convert to one-hot float32 and place one-hot on same device as spectrum
+                one_hot = torch.zeros(self.n_classes, dtype=torch.float32, device=spectrum.device)
+                one_hot[label] = 1.0
+                return spectrum, one_hot
+        
         if self.get_labels:
-            label = self.labels[idx]
             return spectrum, label
         else:
             return spectrum
@@ -157,7 +170,7 @@ def compute_and_save_statistics(
         print(f"Saved MALDI dataset statistics to {stats_path}")
     return stats
 
-def load_data(pickle_marisma, pickle_driams, logger=None, get_labels=False):
+def load_data(pickle_marisma, pickle_driams, logger=None, get_labels=False, model_type=None):
     """
     Load MARISMa and DRIAMS pickled datasets, split into
     train/val/test/OOD, and wrap them in MALDI Dataset objects.
@@ -191,10 +204,11 @@ def load_data(pickle_marisma, pickle_driams, logger=None, get_labels=False):
     labels_train  = np.concatenate([labels_m[train_idx], labels_d[train_idx_d]])
 
     # Create Dataset objects
-    train = MALDI(spectra_train, labels_train, get_labels=get_labels)
-    val_m   = MALDI(spectra_m[val_idx], labels_m[val_idx], get_labels=get_labels)
-    test_m  = MALDI(spectra_m[test_idx], labels_m[test_idx], get_labels=get_labels)
-    ood_d   = MALDI(spectra_d[ood_idx_d], labels_d[ood_idx_d], get_labels=get_labels)
+    normalization = 'diffusion' if model_type == 'diffusion' else True
+    train = MALDI(spectra_train, labels_train, normalization=normalization, get_labels=get_labels)
+    val_m   = MALDI(spectra_m[val_idx], labels_m[val_idx], normalization=normalization, get_labels=get_labels)
+    test_m  = MALDI(spectra_m[test_idx], labels_m[test_idx], normalization=normalization, get_labels=get_labels)
+    ood_d   = MALDI(spectra_d[ood_idx_d], labels_d[ood_idx_d], normalization=normalization, get_labels=get_labels)
 
     # Compute and save statistics
     stats_dir = os.path.join(os.path.dirname(pickle_marisma), '..', 'stats')
