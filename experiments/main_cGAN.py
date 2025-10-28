@@ -18,7 +18,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator, ConditionalGAN, generate_spectra_per_label_cgan
 from dataloader.data import compute_mean_spectra_per_label, load_data, get_dataloaders
-from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan
+from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan, get_and_log
 from utils.visualization import plot_generated_spectra_per_label, plot_meanVSgenerated
 from losses.PIKE_GPU import calculate_pike_matrix
 from utils.test_utils import write_metadata_csv
@@ -26,7 +26,7 @@ from utils.test_utils import write_metadata_csv
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--config', default='configs/cgan_MLP3_32.yaml', type=str)
+    p.add_argument('--config', default='configs/cgan_CNN3_32_weighted.yaml', type=str)
     p.add_argument('--train', action='store_true', default=False, help='Run training')
     p.add_argument('--evaluation', action='store_true', default=False, help='Run evaluation (default: train and eval only)')
     p.add_argument('--generation', action='store_true', default=False, help='Run evaluation (default: train and eval only)')
@@ -36,53 +36,84 @@ def parse_args():
 def main():
     args = parse_args()
     config = yaml.safe_load(open(args.config))
-
     metadata = config.get('metadata', {})
 
-    # Logging
     name = args.config.split('/')[-1].split('.')[0]
     mode = 'training' if args.train else 'evaluation'
+
+    # ============================================================
+    # DIRECTORIES & LOGGING
+    # ============================================================
     gan_results_dir = os.path.join(config['results_dir'], 'gan')
     os.makedirs(gan_results_dir, exist_ok=True)
     results_path = os.path.join(gan_results_dir, name)
     logger = setuplogging(name, mode, results_path)
     logger.info(f"Using config file: {args.config}")
 
-    # Hyperparameters
-    batch_size = config.get('batch_size', 128)
-    pretrained_generator = config.get('pretrained_generator', None)
-    pretrained_discriminator = config.get('pretrained_discriminator', None)
-    latent_dim = config.get('latent_dim', 32)
-    image_dim = config.get('input_dim', 6000)
-    num_epochs = config.get('epochs', 30)
-    num_layers = config.get('n_layers', 3)
-    batch_norm = config.get('batch_norm', False)
-    lr_g = config.get('lr_g', 2e-4)
-    lr_d = config.get('lr_d', 1e-4)
-    max_patience = config.get('max_patience', 10)
-    use_dropout = config.get('use_dropout', True)
-    drop_p = config.get('dropout_prob', 0.1)
+    # ============================================================
+    # DEVICE SETUP
+    # ============================================================
+    logger.info(f"PyTorch version: {torch.__version__}")
+    if torch.cuda.is_available():
+        logger.info("CUDA available")
+        logger.info(f"   - Number of GPUs: {torch.cuda.device_count()}")
+        for i in range(torch.cuda.device_count()):
+            logger.info(f"   - GPU {i}: {torch.cuda.get_device_name(i)}")
+            logger.info(f"     Total memory: {torch.cuda.get_device_properties(i).total_memory / 1024**3:.1f} GB")
+        logger.info(f"   - Current device: {torch.cuda.current_device()}")
+        device = "cuda:0"
+    else:
+        logger.info("CUDA not available")
+        device = "cpu"
+    logger.info(f"Device: {device}")
 
-    # Conditional GAN Hyperparameters
-    y_species_dim = config['y_species_dim']
-    y_embed_dim = config['y_embed_dim']
-    y_amr_dim = config.get('y_amr_dim', 0)  # Can be 0 if no AMR info used
-    get_labels = config.get('get_labels', True)
-    embedding = config.get('embedding', True)
+    # ============================================================
+    # DATA LOADING
+    # ============================================================
+    logger.info("DATA LOADING")
+    pickle_marisma = get_and_log('pickle_marisma', "pickles/MARISMa_study.pkl", config, logger)
+    pickle_driams = get_and_log('pickle_driams', "pickles/DRIAMS_study.pkl", config, logger)
+    batch_size = get_and_log('batch_size', 64, config, logger)
+    image_dim = get_and_log('output_dim', 6000, config, logger)
+    get_labels = get_and_log('get_labels', True, config, logger)
+
+    train, val, test, ood = load_data(pickle_marisma, pickle_driams, get_labels=get_labels)
+    train_loader, val_loader, test_loader, ood_loader = get_dataloaders(train, val, test, ood, batch_size=batch_size)
+
+    # ============================================================
+    # HYPERPARAMETERS
+    # ============================================================
+    logger.info("HYPERPARAMETER SETTING")
+    logger.info("--- Network hyperparameters")
+    num_layers = get_and_log('n_layers', 3, config, logger)
+    batch_norm = get_and_log('batch_norm', False, config, logger)
+    latent_dim = get_and_log('latent_dim', 32, config, logger)
+    logger.info("--- Training hyperparameters")
+    num_epochs = get_and_log('epochs', 30, config, logger)
+    lr_g = get_and_log('lr_g', 2e-4, config, logger)
+    lr_d = get_and_log('lr_d', 1e-4, config, logger)
+    max_patience = get_and_log('max_patience', 10, config, logger)
+    use_dropout = get_and_log('use_dropout', True, config, logger)
+    drop_p = get_and_log('dropout_prob', 0.1, config, logger) if use_dropout else None
+    weighted = get_and_log('weighted', False, config, logger)
+    logger.info("--- Conditional GAN hyperparameters")
+    y_species_dim = get_and_log('y_species_dim', 0, config, logger)
+    y_embed_dim = get_and_log('y_embed_dim', 0, config, logger)
+    y_amr_dim = get_and_log('y_amr_dim', 0, config, logger)
+    embedding = get_and_log('embedding', True, config, logger)
     cond_dim = y_embed_dim + y_amr_dim if embedding else y_species_dim + y_amr_dim
     logger.info(f"Using conditional dimension: {cond_dim} (embedding: {embedding})")
 
+    # Optional pretrained models for evaluation
+    pretrained_generator = get_and_log('pretrained_generator', None, config, logger)
+    pretrained_discriminator = get_and_log('pretrained_discriminator', None, config, logger)
+    
+    # ============================================================
+    # MODEL SETUP
+    # ============================================================
+    logger.info("=" * 80)
     logger.info(f"TRAINING CONFIGURATION:")
     logger.info("=" * 80)
-    logger.info(f"\nInput dimension: {image_dim}\nLatent dimension: {latent_dim}\nLearning rate (G): {lr_g}\nLearning rate (D): {lr_d}\nMax epochs: {num_epochs}\nMax patience: {max_patience}\nBatch size: {batch_size}\nBatch norm: {batch_norm}\nNumber of layers: {num_layers}")
-
-    # Data
-    train, val, test, ood = load_data(config['pickle_marisma'], config['pickle_driams'], logger, get_labels=get_labels)
-    train_loader, val_loader, test_loader, ood_loader = get_dataloaders(train, val, test, ood, batch_size)
-
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Using device: {device}")
 
     # Initialize models
     # generator = GenerationNetwork(latent_dim, image_dim, batch_norm).to(device)
@@ -121,7 +152,8 @@ def main():
     if args.train:
         # Train the GAN using new GAN-specific experiment runner
         loaders = train_loader, val_loader, test_loader
-        generator, discriminator, metadata = run_experiment_gan(model, loaders, device, config, results_path, logger)
+        weights = y_species_dim if weighted else None
+        generator, discriminator, metadata = run_experiment_gan(model, loaders, device, config, results_path, logger, weights)
 
         # Save best models
         gen_path = os.path.join(results_path, 'best_generator.pt')
@@ -139,6 +171,9 @@ def main():
             yaml.dump(config, f)
 
     else:
+        logger.info("=" * 80)
+        logger.info(f"LOADING PRETRAINED MODEL:")
+        logger.info("=" * 80)
         # Load the best model from a previous training
         if pretrained_generator is None or pretrained_discriminator is None:
             raise ValueError("Pretrained model paths must be specified in the config for evaluation mode.")
@@ -148,18 +183,23 @@ def main():
         logger.info(f"Loaded pretrained discriminator from {pretrained_discriminator}")
 
     
-    if args.evaluation:
-        logger.info("=" * 80)
-        logger.info("EVALUATION")
-        logger.info("=" * 80)   
-        criterion = torch.nn.BCELoss()
+    # ============================================================
+    # EVALUATION
+    # ============================================================
+    logger.info("=" * 80)
+    logger.info("EVALUATION")
+    logger.info("=" * 80)   
+    criterion = torch.nn.BCELoss()
 
-        val_loss, val_d, val_g = evaluation_gan(model, val_loader, criterion, config['latent_dim'], device)
-        logger.info(f"Validation loss: {val_loss:.4f} (D={val_d:.4f}, G={val_g:.4f})")
+    val_loss, val_d, val_g = evaluation_gan(model, val_loader, criterion, config['latent_dim'], device)
+    logger.info(f"Validation loss: {val_loss:.4f} (D={val_d:.4f}, G={val_g:.4f})")
 
-        test_loss, test_d, test_g = evaluation_gan(model, test_loader, criterion, config['latent_dim'], device)
-        logger.info(f"Test loss: {test_loss:.4f} (D={test_d:.4f}, G={test_g:.4f})")
+    test_loss, test_d, test_g = evaluation_gan(model, test_loader, criterion, config['latent_dim'], device)
+    logger.info(f"Test loss: {test_loss:.4f} (D={test_d:.4f}, G={test_g:.4f})")
 
+    # ============================================================
+    # GENERATION
+    # ============================================================
     if args.generation:
         model.eval()
 
@@ -167,7 +207,6 @@ def main():
         logger.info("SPECTRA GENERATION")
         logger.info("=" * 80)
 
-        # --- GENERATION PIPELINE (from GAN_generation.py) ---
         # Label correspondence for mapping
         label_correspondence = train.label_convergence
         logger.info(f"Label correspondence: {label_correspondence}")
