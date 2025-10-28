@@ -3,6 +3,7 @@ import math
 import numpy as np
 import os
 import csv
+from tqdm import tqdm
 
 class PIKE_GPU:
     def __init__(self, t=8):
@@ -73,6 +74,33 @@ def calculate_PIKE_gpu(x, x_hat, t=8):
     norm_pike = K_x_xhat / torch.sqrt(K_x_x * K_xhat_xhat)
     return norm_pike.item()
 
+def calculate_PIKE_gpu_batch(x1_batch, x2_batch, t):
+    """
+    Batchwise PIKE calculation for batches of pairs.
+    Args:
+        x1_batch: Tensor of shape (batch_size, feature_dim)
+        x2_batch: Tensor of shape (batch_size, feature_dim)
+        t: PIKE parameter
+    Returns:
+        Tensor of PIKE values, shape (batch_size,)
+    """
+    # Use PIKE_GPU class for each pair, matching calculate_PIKE_gpu logic
+    results = []
+    pike_kernel = PIKE_GPU(t)
+    device = x1_batch.device
+    mz_max = x1_batch.shape[1] - 1
+    mz_axis = torch.arange(mz_max + 1, device=device)
+    X_mz = mz_axis.view(1, -1)
+    for x1, x2 in zip(x1_batch, x2_batch):
+        X_i = x1.view(1, -1)
+        Xhat_i = x2.view(1, -1)
+        _, K_x_x = pike_kernel(X_mz, X_i)
+        _, K_xhat_xhat = pike_kernel(X_mz, Xhat_i)
+        _, K_x_xhat = pike_kernel(X_mz, X_i, X_mz, Xhat_i)
+        norm_pike = K_x_xhat / torch.sqrt(K_x_x * K_xhat_xhat)
+        results.append(norm_pike.item())
+    return torch.tensor(results, device=device)
+
 def calculate_pike_matrix(generated_spectra, mean_spectra_test, label_correspondence, device, results_path=None, saving=True):
     """
     Calculate PIKE to all class means for each generated spectrum in generated_spectra.
@@ -86,7 +114,8 @@ def calculate_pike_matrix(generated_spectra, mean_spectra_test, label_correspond
     """
     all_pike_per_class = {}
     with torch.no_grad():
-        for label_name, spectra in generated_spectra.items():
+        for label_name in tqdm(generated_spectra, desc="Labels"):
+            spectra = generated_spectra[label_name]
             # spectra: [n_generate, D] (np.ndarray or tensor)
             spectra = spectra.to(device)
             mean_spectra_all = {lab: mean_spectra_test[lab].to(device).squeeze() for lab in mean_spectra_test}
