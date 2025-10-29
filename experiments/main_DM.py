@@ -11,143 +11,12 @@ import argparse
 import yaml
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from VANESSA.diffusion_utilities import *
-from utils.training_utils import get_and_log
+from models.DM import ContextUnet1D, generate_spectra_per_label_ddpm
+from utils.training_utils import setuplogging, get_and_log, perturb_input
 from dataloader.data import load_data, get_dataloaders, compute_mean_spectra_per_label
-from losses.PIKE_GPU import calculate_pike_matrix, calculate_PIKE_gpu
-from utils.training_utils import setuplogging
-
-class ContextUnet1D(nn.Module):
-    """
-    Original asymmetric 1D U-Net for diffusion, now configurable.
-    Reproduces exactly your architecture for n_blocks=2 and n_feat=64.
-    """
-    def __init__(
-        self,
-        in_channels: int = 1,
-        n_feat: int = 64,
-        n_cfeat: int = 6,
-        length: int = 6000,
-        n_blocks: int = 2,
-        norm_groups: int = 8,
-        kernel_size: int = 4,
-        logger=None
-    ):
-        super().__init__()
-        self.in_channels = in_channels
-        self.n_feat = n_feat
-        self.n_cfeat = n_cfeat
-        self.length = length
-        self.n_blocks = n_blocks
-        self.logger = logger
-
-        # --- Initial 1D conv ---
-        self.init_conv = nn.Sequential(
-            nn.Conv1d(in_channels, n_feat, kernel_size=3, padding=1),
-            nn.GroupNorm(norm_groups, n_feat),
-            nn.ReLU()
-        )
-
-        # --- Down path (fixed two-level pattern for now) ---
-        self.down_blocks = nn.ModuleList()
-        in_ch = n_feat
-        for i in range(n_blocks):
-            out_ch = n_feat if i == 0 else 2 * n_feat
-            self.down_blocks.append(nn.Sequential(
-                nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, stride=2, padding=1),
-                nn.GroupNorm(norm_groups, out_ch),
-                nn.ReLU()
-            ))
-            in_ch = out_ch
-
-        # --- Bottleneck ---
-        self.to_vec = nn.Sequential(
-            nn.AdaptiveAvgPool1d(1),
-            nn.GELU()
-        )
-
-        # --- Embeddings (same placement/order as original) ---
-        self.timeembed1    = EmbedFC(1, 2 * n_feat)
-        self.timeembed2    = EmbedFC(1, n_feat)
-        self.contextembed1 = EmbedFC(n_cfeat, 2 * n_feat)
-        self.contextembed2 = EmbedFC(n_cfeat, n_feat)
-
-        # --- Up path ---
-        # Big upsample from vector to L/4 (for 2 downs) or L/(2**n_blocks)
-        self.up0 = nn.Sequential(
-            nn.ConvTranspose1d(2 * n_feat, 2 * n_feat,
-                               kernel_size=length // (2 ** n_blocks),
-                               stride=length // (2 ** n_blocks)),
-            nn.GroupNorm(norm_groups, 2 * n_feat),
-            nn.ReLU()
-        )
-
-        # Standard stride=2 deconvs (mirror of down path)
-        self.up_blocks = nn.ModuleList()
-        self.up_blocks.append(nn.Sequential(
-            nn.ConvTranspose1d(4 * n_feat, n_feat, kernel_size=4, stride=2, padding=1),
-            nn.GroupNorm(norm_groups, n_feat),
-            nn.ReLU()
-        ))
-        self.up_blocks.append(nn.Sequential(
-            nn.ConvTranspose1d(2 * n_feat, n_feat, kernel_size=4, stride=2, padding=1),
-            nn.GroupNorm(norm_groups, n_feat),
-            nn.ReLU()
-        ))
-
-        # --- Output layer ---
-        self.out = nn.Sequential(
-            nn.Conv1d(2 * n_feat, n_feat, kernel_size=3, padding=1),
-            nn.GroupNorm(norm_groups, n_feat),
-            nn.ReLU(),
-            nn.Conv1d(n_feat, in_channels, kernel_size=3, padding=1)
-        )
-
-    def forward(self, x, t, c=None):
-        # Encode
-        x = self.init_conv(x)
-        downs = [x]
-        for down in self.down_blocks:
-            downs.append(down(downs[-1]))
-
-        # Bottleneck
-        hiddenvec = self.to_vec(downs[-1])
-
-        # Default context
-        if c is None:
-            c = torch.zeros(x.shape[0], self.n_cfeat, device=x.device, dtype=x.dtype)
-
-        # Embeddings
-        cemb1 = self.contextembed1(c).view(-1, self.n_feat * 2, 1)
-        temb1 = self.timeembed1(t).view(-1, self.n_feat * 2, 1)
-        cemb2 = self.contextembed2(c).view(-1, self.n_feat, 1)
-        temb2 = self.timeembed2(t).view(-1, self.n_feat, 1)
-
-        # Decode
-        up1 = self.up0(hiddenvec)
-        up2 = self.up_blocks[0](torch.cat([cemb1 * up1 + temb1, downs[-1]], dim=1))
-        up3 = self.up_blocks[1](torch.cat([cemb2 * up2 + temb2, downs[-2]], dim=1))
-        out = self.out(torch.cat([up3, downs[0]], dim=1))
-        return out
-
-def perturb_input(x, t, noise, ab_t):
-    """
-    Perturbs a real image x at timestep t using the DDPM noise schedule ab_t.
-    Supports x of shape (B, C, H, W) or (B, C, L) where L=H*W.
-    - x: torch.Tensor, shape (B, C, H, W) or (B, C, L)
-    - t: torch.Tensor, shape (B,) or int
-    - noise: torch.Tensor, same shape as x
-    - ab_t: torch.Tensor, cumulative product of alphas, shape (timesteps+1,)
-    Returns: perturbed image (torch.Tensor, same shape as x)
-    """
-    # Get batch size
-    B = x.shape[0]
-    # Prepare ab for broadcasting
-    if isinstance(t, torch.Tensor):
-        ab = ab_t[t].view(B, 1, 1, 1) if x.ndim == 4 else ab_t[t].view(B, 1, 1)
-    else:
-        ab = ab_t[t].view(1, 1, 1, 1) if x.ndim == 4 else ab_t[t].view(1, 1, 1)
-    return x * ab.sqrt() + noise * (1 - ab).sqrt()
+from losses.PIKE_GPU import calculate_pike_matrix
+from utils.visualization import plot_generated_vs_all_means
+from utils.test_utils import write_metadata_csv
 
 def denormalize_spectra(x):
     """
@@ -160,103 +29,6 @@ def denormalize_spectra(x):
         return (x + 1.0) / 2.0
     else:
         raise TypeError(f"Unsupported type {type(x)} for denormalization")
-
-def generate_spectra_per_label_ddpm(model, label_correspondence, n_samples, timesteps, a_t, b_t, ab_t, logger, device):
-    """
-    Generate n_samples per label using the trained diffusion model.
-    """
-    model.eval()
-    results = {}
-    num_classes = len(label_correspondence)
-
-    for label_id, label_name in label_correspondence.items():
-        logger.info(f"Generating diffusion samples for label: {label_name}")
-
-        # --- Create correct one-hot context for that label ---
-        c = torch.zeros(n_samples, num_classes, device=device)
-        c[:, label_id] = 1.0
-
-        # --- Start from Gaussian noise ---
-        L = model.length
-        x = torch.randn(n_samples, model.in_channels, L, device=device)
-
-        # --- Diffusion sampling ---
-        with torch.no_grad():
-            for t_inv in range(timesteps, 0, -1):
-                t = torch.full((n_samples,), t_inv, device=device, dtype=torch.long)
-                t_norm = (t.float() / float(timesteps)).view(-1, 1)
-                eps = model(x, t_norm, c)
-                ab = ab_t[t].view(n_samples, 1, 1)
-                a = a_t[t].view(n_samples, 1, 1)
-                b = b_t[t].view(n_samples, 1, 1)
-                x = (x - (b / (1 - ab).sqrt()) * eps) / a.sqrt()
-                if t_inv > 1:
-                    x += b.sqrt() * torch.randn_like(x)
-
-        results[label_name] = x.detach().cpu()
-
-    return results
-
-# Define global label names and colors (if not already defined)
-LABEL_NAMES = [
-    'Enterobacter_cloacae_complex',
-    'Enterococcus_Faecium',
-    'Escherichia_Coli',
-    'Klebsiella_Pneumoniae',
-    'Pseudomonas_Aeruginosa',
-    'Staphylococcus_Aureus',
-]
-LABEL_TO_COLOR = {lbl: plt.cm.Spectral(i / 5) for i, lbl in enumerate(LABEL_NAMES)}
-
-def plot_generated_vs_all_means(generated_sample, mean_spectra_dict, label_correspondence, save_path, logger):
-    """
-    Plot a single generated spectrum vs. the mean spectra of all labels (6 subplots).
-    Each subplot: black dashed = generated, colored line = class mean.
-    """
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    # Ensure shapes
-    if generated_sample.ndim == 3:
-        generated_sample = generated_sample.squeeze(0).squeeze(0)
-    elif generated_sample.ndim == 2:
-        generated_sample = generated_sample.squeeze(0)
-    generated_sample = generated_sample.to(device).float()
-
-    # Order labels by their defined sequence (LABEL_NAMES)
-    ordered_items = sorted(mean_spectra_dict.items(), key=lambda kv: LABEL_NAMES.index(label_correspondence[kv[0]]))
-
-    fig, axes = plt.subplots(len(LABEL_NAMES), 1, figsize=(10, 2.5 * len(LABEL_NAMES)), sharex=True)
-
-    if len(LABEL_NAMES) == 1:
-        axes = [axes]
-
-    for i, (label_id, mean_spec) in enumerate(ordered_items):
-        label_name = label_correspondence[label_id]
-        color = LABEL_TO_COLOR.get(label_name, 'C0')
-        ax = axes[i]
-
-        mean_spec = mean_spec.squeeze().to(device).float()
-
-        # Compute PIKE distance between mean and generated spectrum
-        try:
-            pike_val = calculate_PIKE_gpu(mean_spec, generated_sample)
-        except Exception:
-            pike_val = float('nan')
-
-        # Plot mean (colored) and generated (gray dashed)
-        ax.plot(generated_sample.cpu().numpy(), color='lightgray', linestyle='--', linewidth=1.2, label='Generated')
-        ax.plot(mean_spec.cpu().numpy(), color=color, linewidth=2.0, label=f'Mean {label_name}', alpha=0.7)
-
-        ax.set_ylabel("Intensity", fontsize=9)
-        ax.set_title(f"{label_name}  (PIKE={pike_val:.4f})", fontsize=10)
-        ax.legend(loc='upper right', fontsize='x-small')
-
-    axes[-1].set_xlabel("m/z index")
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
-    plt.close(fig)
-    logger.info(f"✅ Saved combined comparison plot → {save_path}")
-
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -374,6 +146,9 @@ def main():
     optim = torch.optim.Adam(nn_model.parameters(), lr=lrate)
     logger.info(f"Optimizer: {optim}")
 
+    num_params = sum(p.numel() for p in nn_model.parameters() if p.requires_grad)
+    metadata['num_params'] = num_params
+
     # Model summary (optional)
     try:
         from pytorch_model_summary import summary
@@ -397,6 +172,7 @@ def main():
     if args.train:
         logger.info("STARTING TRAINING LOOP")
         nn_model.train()
+        training_start = time.time()
         for ep in range(n_epoch):
             optim.param_groups[0]['lr'] = lrate * (1 - ep / n_epoch)
             epoch_losses = []
@@ -432,6 +208,13 @@ def main():
                 ckpt_path = os.path.join(checkpoints_path, f"context_model_{ep}.pth")
                 torch.save(nn_model.state_dict(), ckpt_path)
                 logger.info(f"Saved model: {ckpt_path}")
+        
+        # Get training time
+        training_time = time.time() - training_start
+        metadata['training_time_sec'] = training_time
+        metadata['epochs'] = n_epoch
+        metadata['time_per_epoch_sec'] = training_time / max(n_epoch, 1)
+
 
     # ============================================================
     # LOADING PRETRAINED MODEL
@@ -482,6 +265,12 @@ def main():
         total_samples = sum(v.shape[0] for v in generated_spectra.values()) if isinstance(generated_spectra, dict) else 0
         per_sample = total_time / total_samples if total_samples > 0 else float('nan')
         logger.info(f"Total generation time: {total_time:.3f}s — {per_sample:.6f}s per sample ({total_samples} samples)")
+        metadata['avg_generation_time'] = per_sample
+
+        # Update metadata and save to config
+        config['metadata'] = metadata
+        with open(args.config, 'w') as f:
+            yaml.dump(config, f)
 
 
         # --- Denormalize generated spectra and fix shape to [N, 6000]
@@ -504,6 +293,9 @@ def main():
             sample = spectra[0]
             save_path = os.path.join(plots_path, f"{label_name}_vs_all_means.png")
             plot_generated_vs_all_means(sample, mean_spectra_train, label_correspondence, save_path, logger)
+
+    # Append to CSV
+    write_metadata_csv(metadata, config, name)
 
 if __name__ == "__main__":
     main()
