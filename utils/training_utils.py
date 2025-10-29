@@ -560,3 +560,25 @@ def run_experiment_gan(model, loaders, device, config, results_path, logger, wei
     training_curve_gan(history, results_path)
 
     return generator, discriminator, metadata
+
+
+############## DIFFUSION MODEL TRAINING ########
+
+def perturb_input(x, t, noise, ab_t):
+    """
+    Perturbs a real image x at timestep t using the DDPM noise schedule ab_t.
+    Supports x of shape (B, C, H, W) or (B, C, L) where L=H*W.
+    - x: torch.Tensor, shape (B, C, H, W) or (B, C, L)
+    - t: torch.Tensor, shape (B,) or int
+    - noise: torch.Tensor, same shape as x
+    - ab_t: torch.Tensor, cumulative product of alphas, shape (timesteps+1,)
+    Returns: perturbed image (torch.Tensor, same shape as x)
+    """
+    # Get batch size
+    B = x.shape[0]
+    # Prepare ab for broadcasting
+    if isinstance(t, torch.Tensor):
+        ab = ab_t[t].view(B, 1, 1, 1) if x.ndim == 4 else ab_t[t].view(B, 1, 1)
+    else:
+        ab = ab_t[t].view(1, 1, 1, 1) if x.ndim == 4 else ab_t[t].view(1, 1, 1)
+    return x * ab.sqrt() + noise * (1 - ab).sqrt()

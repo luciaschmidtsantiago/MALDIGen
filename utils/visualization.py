@@ -688,3 +688,56 @@ def plot_meanVSgenerated(generated_sample, mean_spectra, results_path):
 	plt.savefig(results_path, dpi=300)
 	plt.close(fig)
 	print(f"Saved combined plot: {results_path}")
+
+
+
+######## DM ########
+from losses.PIKE_GPU import calculate_PIKE_gpu
+def plot_generated_vs_all_means(generated_sample, mean_spectra_dict, label_correspondence, save_path, logger):
+    """
+    Plot a single generated spectrum vs. the mean spectra of all labels (6 subplots).
+    Each subplot: black dashed = generated, colored line = class mean.
+    """
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # Ensure shapes
+    if generated_sample.ndim == 3:
+        generated_sample = generated_sample.squeeze(0).squeeze(0)
+    elif generated_sample.ndim == 2:
+        generated_sample = generated_sample.squeeze(0)
+    generated_sample = generated_sample.to(device).float()
+
+    # Order labels by their defined sequence (LABEL_NAMES)
+    ordered_items = sorted(mean_spectra_dict.items(), key=lambda kv: LABEL_NAMES.index(label_correspondence[kv[0]]))
+
+    fig, axes = plt.subplots(len(LABEL_NAMES), 1, figsize=(10, 2.5 * len(LABEL_NAMES)), sharex=True)
+
+    if len(LABEL_NAMES) == 1:
+        axes = [axes]
+
+    for i, (label_id, mean_spec) in enumerate(ordered_items):
+        label_name = label_correspondence[label_id]
+        color = LABEL_TO_COLOR.get(label_name, 'C0')
+        ax = axes[i]
+
+        mean_spec = mean_spec.squeeze().to(device).float()
+
+        # Compute PIKE distance between mean and generated spectrum
+        try:
+            pike_val = calculate_PIKE_gpu(mean_spec, generated_sample)
+        except Exception:
+            pike_val = float('nan')
+
+        # Plot mean (colored) and generated (gray dashed)
+        ax.plot(generated_sample.cpu().numpy(), color='lightgray', linestyle='--', linewidth=1.2, label='Generated')
+        ax.plot(mean_spec.cpu().numpy(), color=color, linewidth=2.0, label=f'Mean {label_name}', alpha=0.7)
+
+        ax.set_ylabel("Intensity", fontsize=9)
+        ax.set_title(f"{label_name}  (PIKE={pike_val:.4f})", fontsize=10)
+        ax.legend(loc='upper right', fontsize='x-small')
+
+    axes[-1].set_xlabel("m/z index")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    plt.close(fig)
+    logger.info(f"✅ Saved combined comparison plot → {save_path}")
