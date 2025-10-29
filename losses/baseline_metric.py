@@ -11,7 +11,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from PIKE_GPU import calculate_PIKE_gpu_batch, calculate_pike_matrix
 from dataloader.data import load_data, get_dataloaders, compute_mean_spectra_per_label
 
-def get_fold(train_loader, device, subset_ratio=0.1, seed=42):
+
+def get_fold(train_loader, subset_ratio=0.1, seed=42):
     """
     Collect a stratified subset of the training data.
     """
@@ -32,13 +33,6 @@ def get_fold(train_loader, device, subset_ratio=0.1, seed=42):
     X_all = torch.cat(X_all, dim=0)
     y_all = torch.cat(y_all, dim=0)
     print(f"Total training samples: {len(X_all)}")
-
-    # Stratified subset
-    sss = StratifiedShuffleSplit(n_splits=1, test_size=subset_ratio, random_state=seed)
-    _, idx_subset = next(sss.split(np.zeros(len(y_all)), y_all.cpu().numpy()))
-
-    X_subset = X_all[idx_subset].to(device)
-    y_subset = y_all[idx_subset].to(device)
 
     # --------------------------------------------------------------------------
     # 2. Stratified 10% subset of the training data
@@ -127,16 +121,22 @@ def compute_baseline_metrics(X_train, y_train, label_convergence, output_dir, sa
         X_label = [x for x, y in zip(X_train, y_train) if y == label]
         n = len(X_label)
         label_name = label_convergence[label] if isinstance(label_convergence, dict) and label in label_convergence else str(label)
+        print(f"\n--- Debug: Processing label {label_name} (id={label}) ---")
+        if str(label) == '5':
+            import pdb; pdb.set_trace()
+        print(f"Sample count for label: {n}")
         if n == 0:
             print(f"Skipping label {label_name}: no samples")
             continue
 
         k = max(1, int(np.ceil(n * sample_frac)))
+        print(f"Sampling k={k} from n={n}")
         # choose k indices without replacement
         idxs = rng.choice(n, size=k, replace=False)
 
         # convert all to tensors once
         X_label_tensor = [to_tensor(x) for x in X_label]
+        print(f"Tensor shape for label {label_name}: {[x.shape for x in X_label_tensor]}")
 
         all_sims = []
         for idx in tqdm(idxs, desc=f"PIKE approx {label_name}"):
@@ -150,12 +150,13 @@ def compute_baseline_metrics(X_train, y_train, label_convergence, output_dir, sa
                 sims_np = sims_batch.detach().cpu().numpy() if isinstance(sims_batch, torch.Tensor) else np.array(sims_batch)
                 all_sims.extend(sims_np.tolist())
 
+        print(f"PIKE values for label {label_name}: {all_sims[:10]} ... (total {len(all_sims)})")
         if len(all_sims) > 0:
             mean_pike = float(np.mean(all_sims))
             std_pike = float(np.std(all_sims))
         else:
-            mean_pike = 0.0
-            std_pike = 0.0
+            mean_pike = float('nan')
+            std_pike = float('nan')
 
         # Save per-label full PIKE values (one value per line) for later analysis
         # sanitize label_name for filename
@@ -194,7 +195,7 @@ if __name__ == "__main__":
     label_convergence = train.label_convergence
 
     # GET STRATIFIED SUBSET OF TRAINING DATA (10%)
-    X_subset, y_subset = get_fold(train_loader, device, subset_ratio=0.1, seed=42)
+    X_subset, y_subset = get_fold(train_loader, subset_ratio=0.1, seed=42)
 
     # GET MEAN SPECTRA PER LABEL (FULL TRAIN)
     mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device)
