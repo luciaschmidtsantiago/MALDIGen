@@ -71,7 +71,7 @@ def calculate_PIKE_gpu(x, x_hat, t=8):
     _, K_x_x = pike(X_mz, X_i)
     _, K_xhat_xhat = pike(X_mz, Xhat_i)
     _, K_x_xhat = pike(X_mz, X_i, X_mz, Xhat_i)
-    norm_pike = K_x_xhat / torch.sqrt(K_x_x * K_xhat_xhat)
+    norm_pike = K_x_xhat / (torch.sqrt(K_x_x * K_xhat_xhat) + 1e-10)  # avoid division by zero
     return norm_pike.item()
 
 def calculate_PIKE_gpu_batch(x1_batch, x2_batch, t):
