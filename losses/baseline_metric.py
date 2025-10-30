@@ -4,11 +4,12 @@ import sys
 import csv
 import random
 import numpy as np
+import pandas as pd
 from sklearn.model_selection import StratifiedShuffleSplit
 from tqdm import tqdm
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from PIKE_GPU import calculate_PIKE_gpu_batch, calculate_pike_matrix
+from PIKE_GPU import calculate_PIKE_gpu, calculate_pike_matrix
 from dataloader.data import load_data, get_dataloaders, compute_mean_spectra_per_label
 
 
@@ -77,108 +78,231 @@ def baseline_versus_mean(subset, mean_spectra_train, device, results_path):
 
     return all_pike_per_class
 
-def baseline_all():
+def compute_pairwise_pike_per_label(subset, device, results_path, t=8):
     """
-    Compute full pairwise PIKE baseline for all training samples vs all training samples.
-    WARNING: very expensive O(N^2) computation and memory!
+    Compute and save full pairwise PIKE (subset vs subset) for each label.
+    Uses the single-pair kernel to avoid batch-shape surprises.
+    Diagonal is set to 1.0; zero spectra are handled safely.
     """
-    pass  # Implementation omitted due to high computational cost
+    X_subset, y_subset = subset
+    os.makedirs(results_path, exist_ok=True)
 
+    label_ids = torch.unique(y_subset).cpu().tolist()
+    print(f"Computing intra-label PIKE matrices for {len(label_ids)} labels")
 
-def compute_baseline_metrics(X_train, y_train, label_convergence, output_dir, sample_frac=0.1, t=8, batch_size=64, seed=42):
+    with torch.no_grad():
+        for label in label_ids:
+            label = int(label)
+            spectra = X_subset[y_subset == label].to(device)
+            n = spectra.shape[0]
+            if n < 2:
+                print(f"Skipping label {label}: only {n} sample(s)")
+                continue
+
+            print(f"\nLabel {label}: computing {n}x{n} PIKE matrix")
+            # Ensure 2D [N, D]
+            if spectra.ndim == 3 and spectra.shape[1] == 1:
+                spectra = spectra.squeeze(1)
+            if spectra.ndim == 1:
+                spectra = spectra.unsqueeze(0)
+
+            sims = torch.zeros((n, n), dtype=torch.float32, device=device)
+
+            # Precompute zero-vector mask
+            zero_mask = (spectra.abs().sum(dim=1) == 0)
+
+            for i in tqdm(range(n), desc=f"label {label} rows", leave=False):
+                x_i = spectra[i].view(-1)
+
+                if zero_mask[i]:
+                    sims[i, :] = 0.0
+                    continue
+
+                for j in range(n):
+                    y_j = spectra[j].view(-1)
+                    if zero_mask[j]:
+                        sims[i, j] = 0.0
+                        continue
+
+                    val = calculate_PIKE_gpu(x_i, y_j, t)
+
+                    # --- handle numeric edge cases ---
+                    if np.isnan(val) or np.isinf(val):
+                        val = 0.0
+
+                    sims[i, j] = float(val)
+
+            # Diagonal = 1.0
+            idx = torch.arange(n, device=device)
+            sims[idx, idx] = 1.0
+
+            # Save and free
+            np.save(os.path.join(results_path, f"pairwise_PIKE_label{label}.npy"),
+                    sims.detach().cpu().numpy())
+            print(f"✅ Saved PIKE matrix for label {label} ({n}x{n})")
+
+            del sims, spectra
+            torch.cuda.empty_cache()
+
+def summarize_intra_label_pike(results_path, label_convergence, y_subset):
     """
-    Approximate baseline PIKE per label by sampling a stratified subset per label.
-
-    For each label L:
-      - let n = number of samples with label L
-      - choose k = max(1, ceil(n * sample_frac)) samples (stratified by label implicitly)
-      - for each sampled sample s, compute PIKE(s, x) for all x in label L (batched)
-      - aggregate mean/std across all comparisons for that label and write CSV
-
-    This reduces compute roughly by factor ~ (sample_frac * 2) vs full pairwise.
+    Read stored .npy matrices and write a single-row CSV:
+    label, all_<name0>, all_<name1>, ...
+    Each cell is mean±std of the off-diagonal entries for that label.
     """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.cuda.empty_cache()
+    labels = sorted(torch.unique(y_subset).cpu().tolist())
+    label_names = [label_convergence.get(l, str(l)) if isinstance(label_convergence, dict) else str(l)
+                   for l in labels]
 
-    assert len(X_train) == len(y_train), "Data and labels length mismatch"
-
-    labels = sorted(np.unique(y_train))
-
-    def to_tensor(x):
-        if isinstance(x, torch.Tensor):
-            return x.detach().clone().float().to(device).view(-1)
-        return torch.tensor(x, dtype=torch.float32, device=device).view(-1)
-
-    out_csv = os.path.join(output_dir, "baseline_PIKE.csv")
-    with open(out_csv, "w", newline='') as f:
+    csv_path = os.path.join(results_path, "intra_label_pike_summary.csv")
+    with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["Label", "Mean_PIKE", "Std_PIKE", "N_label", "Sampled_k"]) 
+        writer.writerow(["LABEL"] + [f"{nm}" for nm in label_names])
 
-    rng = np.random.default_rng(seed)
+    row = []
+    for l in labels:
+        path = os.path.join(results_path, f"pairwise_PIKE_label{int(l)}.npy")
+        mat = np.load(path)
+        # exclude diagonal (which is 1.0 by design)
+        off_diag = mat[~np.eye(mat.shape[0], dtype=bool)]
+        mean = float(np.mean(off_diag))
+        std = float(np.std(off_diag))
+        row.append(f"{mean:.3f}±{std:.3f}")
 
-    for label in labels:
-        # collect all samples for this label
-        X_label = [x for x, y in zip(X_train, y_train) if y == label]
-        n = len(X_label)
-        label_name = label_convergence[label] if isinstance(label_convergence, dict) and label in label_convergence else str(label)
-        print(f"\n--- Debug: Processing label {label_name} (id={label}) ---")
-        if str(label) == '5':
-            import pdb; pdb.set_trace()
-        print(f"Sample count for label: {n}")
-        if n == 0:
-            print(f"Skipping label {label_name}: no samples")
+    with open(csv_path, "a", newline="") as f:
+        csv.writer(f).writerow(["All_intra_label"] + row)
+
+    print(f"✅ Saved intra-label PIKE summary to {csv_path}")
+
+# ===============================================================
+#  METRIC FUNCTIONS (operating on precomputed PIKE matrices)
+# ===============================================================
+def compute_mmd_from_pike(K_xx, K_yy=None, K_xy=None):
+    """
+    Compute unbiased MMD^2 using precomputed PIKE kernel matrices.
+    If K_yy or K_xy are None, assumes X=Y (same dataset baseline).
+    """
+    if K_yy is None:
+        K_yy = K_xx
+    if K_xy is None:
+        K_xy = K_xx
+
+    m = K_xx.shape[0]
+    n = K_yy.shape[0]
+    if m < 2 or n < 2:
+        return np.nan
+
+    mask_xx = ~np.eye(m, dtype=bool)
+    mask_yy = ~np.eye(n, dtype=bool)
+
+    term_xx = np.mean(K_xx[mask_xx])
+    term_yy = np.mean(K_yy[mask_yy])
+    term_xy = np.mean(K_xy)
+
+    mmd2 = term_xx + term_yy - 2 * term_xy
+    return float(mmd2)
+
+def compute_class_distance_stats(K):
+    """Return mean ± std of pairwise distances within a class."""
+    m = K.shape[0]
+    if m < 2:
+        return np.nan, np.nan
+    mask = np.triu(np.ones_like(K, dtype=bool), k=1)
+    dists = 1.0 - K[mask]
+    return float(np.mean(dists)), float(np.std(dists))
+
+def compute_neighbour_distance_stats(K):
+    """Return mean ± std of nearest-neighbour distances per sample."""
+    m = K.shape[0]
+    if m < 2:
+        return np.nan, np.nan
+    K_ = K.copy()
+    np.fill_diagonal(K_, -np.inf)
+    nearest = np.max(K_, axis=1)
+    dists = 1.0 - nearest
+    return float(np.mean(dists)), float(np.std(dists))
+
+
+# ===============================================================
+#  DRIVER FUNCTION
+# ===============================================================
+def compute_all_baseline_metrics(results_path, label_convergence, y_subset):
+    """
+    Compute all baseline metrics (PIKE mean±std, MMD², class distance, neighbour distance)
+    and save them in a single compact CSV table where each label is a column.
+    """
+
+    # -------------------------------------------------------
+    # Setup: ensure mapping uses correct species names
+    # -------------------------------------------------------
+    labels = sorted(torch.unique(y_subset).cpu().tolist())
+    label_ids = [int(l) for l in labels]
+
+    # Handle both int and str keys gracefully
+    label_names = []
+    for l in label_ids:
+        if l in label_convergence:
+            label_names.append(label_convergence[l])
+        elif str(l) in label_convergence:
+            label_names.append(label_convergence[str(l)])
+        else:
+            label_names.append(f"{l}")
+
+
+    # Prepare containers for each metric row
+    row_pike = []
+    row_mmd = []
+    row_dclass = []
+    row_dnn = []
+
+    # -------------------------------------------------------
+    # Per-label computation
+    # -------------------------------------------------------
+    for label_id, label_name in zip(label_ids, label_names):
+        path = os.path.join(results_path, f"pairwise_PIKE_label{label_id}.npy")
+        if not os.path.exists(path):
+            print(f"⚠️ Missing matrix for label {label_id} ({label_name}), skipping.")
+            row_pike.append("NaN±NaN")
+            row_mmd.append("NaN")
+            row_dclass.append("NaN±NaN")
+            row_dnn.append("NaN±NaN")
             continue
 
-        k = max(1, int(np.ceil(n * sample_frac)))
-        print(f"Sampling k={k} from n={n}")
-        # choose k indices without replacement
-        idxs = rng.choice(n, size=k, replace=False)
+        K = np.load(path)
+        np.fill_diagonal(K, 1.0)
+        K = np.nan_to_num(K, nan=0.0, posinf=1.0, neginf=0.0)
 
-        # convert all to tensors once
-        X_label_tensor = [to_tensor(x) for x in X_label]
-        print(f"Tensor shape for label {label_name}: {[x.shape for x in X_label_tensor]}")
+        # --- PIKE mean±std ---
+        off_diag = K[~np.eye(K.shape[0], dtype=bool)]
+        mean_pike = float(np.mean(off_diag))
+        std_pike = float(np.std(off_diag))
+        row_pike.append(f"{mean_pike:.3f}±{std_pike:.3f}")
 
-        all_sims = []
-        for idx in tqdm(idxs, desc=f"PIKE approx {label_name}"):
-            x_s = X_label_tensor[idx]
-            # compare to all samples in batches
-            for start in range(0, n, batch_size):
-                end = min(n, start + batch_size)
-                x2_batch = torch.stack(X_label_tensor[start:end], dim=0)
-                x1_batch = x_s.unsqueeze(0).repeat(x2_batch.size(0), 1)
-                sims_batch = calculate_PIKE_gpu_batch(x1_batch, x2_batch, t)
-                sims_np = sims_batch.detach().cpu().numpy() if isinstance(sims_batch, torch.Tensor) else np.array(sims_batch)
-                all_sims.extend(sims_np.tolist())
+        # --- Other metrics ---
+        mmd2 = compute_mmd_from_pike(K)
+        mean_dclass, std_dclass = compute_class_distance_stats(K)
+        mean_dnn, std_dnn = compute_neighbour_distance_stats(K)
 
-        print(f"PIKE values for label {label_name}: {all_sims[:10]} ... (total {len(all_sims)})")
-        if len(all_sims) > 0:
-            mean_pike = float(np.mean(all_sims))
-            std_pike = float(np.std(all_sims))
-        else:
-            mean_pike = float('nan')
-            std_pike = float('nan')
+        print(f"Label {label_name}: MMD²={mmd2:.6f}, D_class={mean_dclass:.6f}±{std_dclass:.6f}, D_NN={mean_dnn:.6f}±{std_dnn:.6f}")
 
-        # Save per-label full PIKE values (one value per line) for later analysis
-        # sanitize label_name for filename
-        safe_label = "".join([c if (c.isalnum() or c in ('-', '_', '.')) else '_' for c in label_name])
-        per_label_path = os.path.join(output_dir, f"baseline_PIKE_{safe_label}.csv")
-        try:
-            if len(all_sims) > 0:
-                np.savetxt(per_label_path, np.array(all_sims), fmt="%.6f", header=f"PIKE values for {label_name}")
-            else:
-                # create empty file with header
-                with open(per_label_path, 'w') as pf:
-                    pf.write(f"# PIKE values for {label_name}\n")
-        except Exception as e:
-            print(f"Warning: failed to write per-label PIKE file {per_label_path}: {e}")
+        row_mmd.append(f"{mmd2:.6f}")
+        row_dclass.append(f"{mean_dclass:.3f}±{std_dclass:.3f}")
+        row_dnn.append(f"{mean_dnn:.3f}±{std_dnn:.3f}")
 
-        with open(out_csv, "a", newline='') as f:
-            csv.writer(f).writerow([label_name, mean_pike, std_pike, n, k])
+    # -------------------------------------------------------
+    # Write compact CSV table
+    # -------------------------------------------------------
+    out_csv = os.path.join(results_path, "baseline_metrics.csv")
+    with open(out_csv, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Label_ID"] + [str(i) for i in label_ids])
+        writer.writerow(["Species_name"] + label_names)
+        writer.writerow(["PIKE"] + row_pike)
+        writer.writerow(["MMD²"] + row_mmd)
+        writer.writerow(["Class_dist"] + row_dclass)
+        writer.writerow(["Neighbour_dist"] + row_dnn)
 
-        print(f"Label {label_name}: N={n}, sampled={k}, PIKE mean={mean_pike:.4f}, std={std_pike:.4f}")
-
-    print(f"Wrote approx PIKE baseline to: {out_csv}")
-
+    print(f"✅ Saved compact baseline metrics table to {out_csv}")
 
 
 if __name__ == "__main__":
@@ -198,11 +322,17 @@ if __name__ == "__main__":
     X_subset, y_subset = get_fold(train_loader, subset_ratio=0.1, seed=42)
 
     # GET MEAN SPECTRA PER LABEL (FULL TRAIN)
-    mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device)
+    # mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device)
 
     # COMPUTE PIKE of SUBSET VS MEAN
-    all_pike_per_class = baseline_versus_mean([X_subset, y_subset], mean_spectra_train, device, output_dir)
+    # all_pike_per_class = baseline_versus_mean([X_subset, y_subset], mean_spectra_train, device, output_dir)
 
-    # X_train = train.data
-    # y_train = train.labels
-    # compute_baseline_metrics(X_train, y_train, label_convergence, output_dir, sample_frac=0.1, t=8, batch_size=64)
+    # COMPUTE PAIRWISE PIKE PER LABEL (SUBSET VS SUBSET)
+    # compute_pairwise_pike_per_label([X_subset, y_subset], device, output_dir, t=8)
+
+    # SUMMARIZE INTRA-LABEL PIKE MATRICES
+    # summarize_intra_label_pike(output_dir, label_convergence, y_subset)
+
+    # COMPUTE AND APPEND METRICS
+    compute_all_baseline_metrics(output_dir, label_convergence, y_subset)
+
