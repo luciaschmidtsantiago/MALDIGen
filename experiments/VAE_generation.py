@@ -75,7 +75,7 @@ def main():
     train_loader, val_loader, test_loader, ood_loader = get_dataloaders(train, val, test, ood, batch_size)
 
     # Compute mean spectra for each label in train set
-    mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device, logger)
+    mean_std_spectra = compute_mean_spectra_per_label(train_loader, device, logger)
 
     # Model architecture parameters
     D = config['input_dim']
@@ -131,7 +131,7 @@ def main():
     logger.info(f"Generating conditional samples for {len(label_names)} labels: {label_names}")
 
     # Compute mean spectra for each label in train set
-    mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device, logger)
+    mean_std_spectra = compute_mean_spectra_per_label(train_loader, device, logger)
     mean_spectra_list = [mean_spectra_train[i].squeeze(0) for i in range(len(mean_spectra_train))]
 
     # Number of synthetic spectra to generate per label

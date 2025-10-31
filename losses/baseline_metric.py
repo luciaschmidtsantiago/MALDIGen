@@ -144,36 +144,7 @@ def compute_pairwise_pike_per_label(subset, device, results_path, t=8):
             del sims, spectra
             torch.cuda.empty_cache()
 
-def summarize_intra_label_pike(results_path, label_convergence, y_subset):
-    """
-    Read stored .npy matrices and write a single-row CSV:
-    label, all_<name0>, all_<name1>, ...
-    Each cell is mean±std of the off-diagonal entries for that label.
-    """
-    labels = sorted(torch.unique(y_subset).cpu().tolist())
-    label_names = [label_convergence.get(l, str(l)) if isinstance(label_convergence, dict) else str(l)
-                   for l in labels]
-
-    csv_path = os.path.join(results_path, "intra_label_pike_summary.csv")
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["LABEL"] + [f"{nm}" for nm in label_names])
-
-    row = []
-    for l in labels:
-        path = os.path.join(results_path, f"pairwise_PIKE_label{int(l)}.npy")
-        mat = np.load(path)
-        # exclude diagonal (which is 1.0 by design)
-        off_diag = mat[~np.eye(mat.shape[0], dtype=bool)]
-        mean = float(np.mean(off_diag))
-        std = float(np.std(off_diag))
-        row.append(f"{mean:.3f}±{std:.3f}")
-
-    with open(csv_path, "a", newline="") as f:
-        csv.writer(f).writerow(["All_intra_label"] + row)
-
-    print(f"✅ Saved intra-label PIKE summary to {csv_path}")
-
+            
 # ===============================================================
 #  METRIC FUNCTIONS (operating on precomputed PIKE matrices)
 # ===============================================================
@@ -322,16 +293,13 @@ if __name__ == "__main__":
     X_subset, y_subset = get_fold(train_loader, subset_ratio=0.1, seed=42)
 
     # GET MEAN SPECTRA PER LABEL (FULL TRAIN)
-    # mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device)
+    # mean_std_spectra = compute_mean_spectra_per_label(train_loader, device)
 
     # COMPUTE PIKE of SUBSET VS MEAN
     # all_pike_per_class = baseline_versus_mean([X_subset, y_subset], mean_spectra_train, device, output_dir)
 
     # COMPUTE PAIRWISE PIKE PER LABEL (SUBSET VS SUBSET)
     # compute_pairwise_pike_per_label([X_subset, y_subset], device, output_dir, t=8)
-
-    # SUMMARIZE INTRA-LABEL PIKE MATRICES
-    # summarize_intra_label_pike(output_dir, label_convergence, y_subset)
 
     # COMPUTE AND APPEND METRICS
     compute_all_baseline_metrics(output_dir, label_convergence, y_subset)

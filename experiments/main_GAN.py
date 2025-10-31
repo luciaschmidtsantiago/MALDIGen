@@ -155,7 +155,7 @@ def main():
 
 
         # Generate and plot spectra with respect to the TRAINING SET
-        mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader, device, logger)
+        mean_std_spectra = compute_mean_spectra_per_label(train_loader, device, logger)
         mean_spectra_list = [mean_spectra_train[i].squeeze(0) for i in range(len(mean_spectra_train))]
         print(f"Mean spectra per label (train set) computed for {len(mean_spectra_list)} labels.")
 

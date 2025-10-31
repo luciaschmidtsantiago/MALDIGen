@@ -461,7 +461,7 @@ if generation:
             y = y.argmax(dim=1)
         train_loader_idx.append((x, y))
     # Then pass that temporary loader
-    mean_spectra_train, _, _ = compute_mean_spectra_per_label(train_loader_idx, device)
+    mean_std_spectra = compute_mean_spectra_per_label(train_loader_idx, device)
 
 
     # --- Denormalize mean spectra from [-1,1] → [0,1] and fix shape to [1, 6000]

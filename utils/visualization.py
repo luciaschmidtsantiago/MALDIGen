@@ -4,6 +4,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 
+from losses.PIKE_GPU import calculate_PIKE_gpu
+
+
 
 ########## FIXED COLOR MAP FOR 6 LABELS ##########
 # Replace with your actual label names in the correct order:
@@ -296,54 +299,60 @@ def plot_reconstructions_conditional(model, data, n_samples, results_path, pike_
 	plt.close()
 	print(f"ConditionalVAE reconstructions plot saved to: {plot_path}")
 
-def plot_generated_spectra_per_label(generated_spectra, mean_spectrum, label_name, n_samples, results_path):
+def plot_generated_spectra_per_label(generated_spectra, mean_std_tuple, label_name, n_samples, results_path):
 	"""
-	Plot up to n_samples generated spectra for a label in a single column (each spectrum in a row), overlaying the mean spectrum.
+	Plot up to n_samples generated spectra for a label in a single column (each spectrum in a row), overlaying mean and std spectrum.
+	Each subplot: std fill (light grey, clipped to zero), mean (thin black), generated (label color), PIKE value in title.
+	Args:
+		generated_spectra: np.ndarray or torch.Tensor, shape [N, ...]
+		mean_std_tuple: tuple (mean, std) for the label
+		label_name: str, label name
+		n_samples: int, number of generated spectra to plot
+		results_path: str, directory to save the plot
 	"""
 	n_total = generated_spectra.shape[0]
 	n_plot = min(n_samples, n_total)
-	# Randomly sample n_plot indices
 	idxs = np.random.choice(n_total, n_plot, replace=False)
 	sampled_spectra = generated_spectra[idxs]
+	mean_spec, std_spec = mean_std_tuple
+	from losses.PIKE_GPU import calculate_PIKE_gpu
+	label_to_color = LABEL_TO_COLOR
+	def to_numpy(x):
+		if hasattr(x, 'detach'):
+			return x.detach().cpu().numpy()
+		elif hasattr(x, 'cpu'):
+			return x.cpu().numpy()
+		else:
+			return x
+	def to_tensor(x):
+		if isinstance(x, np.ndarray):
+			return torch.tensor(x, dtype=torch.float32)
+		elif hasattr(x, 'detach'):
+			return x.detach().cpu()
+		elif hasattr(x, 'cpu'):
+			return x.cpu()
+		else:
+			return torch.tensor(x, dtype=torch.float32)
+	mean_spec = to_tensor(mean_spec).squeeze().float()
+	std_spec = to_tensor(std_spec).squeeze().float()
+	color = label_to_color.get(label_name, 'blue')
 	fig, axes = plt.subplots(n_plot, 1, figsize=(10, 2.5 * n_plot), sharex=True)
 	if n_plot == 1:
 		axes = [axes]
-	from losses.PIKE_GPU import calculate_PIKE_gpu
-	# Use fixed color map for label
-	label_to_color = LABEL_TO_COLOR
+	x_axis = np.arange(mean_spec.shape[-1])
+	lower = np.maximum(to_numpy(mean_spec - std_spec), 0)
+	upper = to_numpy(mean_spec + std_spec)
 	for i in range(n_plot):
 		ax = axes[i]
-		# Ensure data is on CPU and numpy for matplotlib, but keep torch for PIKE
-		def to_numpy(x):
-			if hasattr(x, 'detach'):
-				return x.detach().cpu().numpy()
-			elif hasattr(x, 'cpu'):
-				return x.cpu().numpy()
-			else:
-				return x
-		def to_tensor(x):
-			if isinstance(x, np.ndarray):
-				return torch.tensor(x, dtype=torch.float32)
-			elif hasattr(x, 'detach'):
-				return x.detach().cpu()
-			elif hasattr(x, 'cpu'):
-				return x.cpu()
-			else:
-				return torch.tensor(x, dtype=torch.float32)
 		gen_spec = sampled_spectra[i]
-		mean_spec = mean_spectrum
-		# Calculate PIKE value
 		gen_spec_t = to_tensor(gen_spec)
-		mean_spec_t = to_tensor(mean_spec)
 		try:
-			pike_val = calculate_PIKE_gpu(gen_spec_t, mean_spec_t)
-		except Exception as e:
+			pike_val = calculate_PIKE_gpu(mean_spec, gen_spec_t)
+		except Exception:
 			pike_val = float('nan')
-		# Color for this label
-		color = label_to_color.get(label_name, 'blue')
-		# Plot
-		ax.plot(to_numpy(gen_spec), label=f'Generated #{i+1}', color=color)
-		ax.plot(to_numpy(mean_spec), label='Mean spectrum', color='gray', linestyle='--', alpha=0.4, linewidth=2)
+		ax.fill_between(x_axis, lower, upper, color='lightgrey', alpha=0.5, label='Std')
+		ax.plot(x_axis, to_numpy(mean_spec), color='black', linewidth=1.0, label='Mean')
+		ax.plot(x_axis, to_numpy(gen_spec), color=color, linewidth=2.0, label=f'Generated #{i+1}', alpha=0.8)
 		ax.set_ylabel("Intensity")
 		ax.set_title(f"{label_name} - Generated #{i+1}\nPIKE={pike_val:.4f}")
 		ax.legend(loc='upper right', fontsize='small')
@@ -629,12 +638,10 @@ def training_curve_gan(history, results_path):
 
 def plot_meanVSgenerated(generated_sample, mean_spectra, results_path):
 	"""
-	Plot one generated spectrum per label over its mean real spectrum (6 subplots total).
-	Each subplot shows the mean spectrum (color) and generated spectrum (light gray),
-	and displays the PIKE value in the title.
+	Plot one generated spectrum per label over its mean and std real spectrum (6 subplots total).
+	Each subplot shows: std fill (light grey, clipped to zero), mean (thin black), generated (label color), PIKE value in title.
 	"""
 	from losses.PIKE_GPU import calculate_PIKE_gpu
-	# Local helper functions (same as your version)
 	def to_numpy(x):
 		if hasattr(x, 'detach'):
 			return x.detach().cpu().numpy()
@@ -642,7 +649,6 @@ def plot_meanVSgenerated(generated_sample, mean_spectra, results_path):
 			return x.cpu().numpy()
 		else:
 			return x
-
 	def to_tensor(x):
 		if isinstance(x, np.ndarray):
 			return torch.tensor(x, dtype=torch.float32)
@@ -653,8 +659,6 @@ def plot_meanVSgenerated(generated_sample, mean_spectra, results_path):
 		else:
 			return torch.tensor(x, dtype=torch.float32)
 
-
-	# === Plot setup: 6 rows, 1 column ===
 	fig, axes = plt.subplots(6, 1, figsize=(10, 15), sharex=True, sharey=True)
 	if not isinstance(axes, np.ndarray):
 		axes = [axes]
@@ -662,82 +666,91 @@ def plot_meanVSgenerated(generated_sample, mean_spectra, results_path):
 	for i, label_name in enumerate(LABEL_NAMES):
 		ax = axes[i]
 		color = LABEL_TO_COLOR.get(label_name, 'blue')
+		# mean_spectra is now a dict: label → (mean, std)
+		mean_spec, std_spec = mean_spectra[i]
+		mean_spec = to_tensor(mean_spec).squeeze().float()
+		std_spec = to_tensor(std_spec).squeeze().float()
 
-		mean_spec = mean_spectra[i]
+		pike_val = calculate_PIKE_gpu(mean_spec, to_tensor(generated_sample))
 
-		pike_val = calculate_PIKE_gpu(mean_spec, generated_sample)
-
-		# Plot generated spectrum (light gray)
-		ax.plot(to_numpy(generated_sample), color='lightgray', linewidth=1.5, label='Generated')
-
-		# Plot mean spectrum (label color)
-		ax.plot(to_numpy(mean_spec), color=color, linewidth=2.5, label='Mean spectrum')
+		x_axis = np.arange(mean_spec.shape[-1])
+		lower = np.maximum(to_numpy(mean_spec - std_spec), 0)
+		upper = to_numpy(mean_spec + std_spec)
+		ax.fill_between(x_axis, lower, upper, color='lightgrey', alpha=0.5, label='Std')
+		ax.plot(x_axis, to_numpy(mean_spec), color='black', linewidth=1.0, label='Mean')
+		ax.plot(x_axis, to_numpy(generated_sample), color=color, linewidth=2.0, label='Generated', alpha=0.8)
 
 		ax.set_title(f"{label_name}\nPIKE={pike_val:.4f}")
 		ax.legend(loc='upper right', fontsize='small')
 		ax.set_xticks([])
 		ax.set_yticks([])
 
-	# Turn off any unused axes (if <6)
 	for k in range(len(LABEL_NAMES), len(axes)):
 		axes[k].axis('off')
 
 	axes[-1].set_xlabel("m/z index")
-	fig.suptitle("Generated Spectra vs Mean Real Spectra (1 per label)", fontsize=16)
+	fig.suptitle("Generated Spectra vs Mean/Std Real Spectra (1 per label)", fontsize=16)
 	plt.tight_layout()
 	plt.savefig(results_path, dpi=300)
 	plt.close(fig)
 	print(f"Saved combined plot: {results_path}")
 
 
-
 ######## DM ########
-from losses.PIKE_GPU import calculate_PIKE_gpu
 def plot_generated_vs_all_means(generated_sample, mean_spectra_dict, label_correspondence, save_path, logger):
-    """
-    Plot a single generated spectrum vs. the mean spectra of all labels (6 subplots).
-    Each subplot: black dashed = generated, colored line = class mean.
-    """
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+	"""
+	Plot a single generated spectrum vs. the mean and std spectra of all labels (6 subplots).
+	Each subplot: colored = generated, thin black = mean, light grey fill = std.
+	"""
+	device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    # Ensure shapes
-    if generated_sample.ndim == 3:
-        generated_sample = generated_sample.squeeze(0).squeeze(0)
-    elif generated_sample.ndim == 2:
-        generated_sample = generated_sample.squeeze(0)
-    generated_sample = generated_sample.to(device).float()
+	# Ensure shapes
+	if generated_sample.ndim == 3:
+		generated_sample = generated_sample.squeeze(0).squeeze(0)
+	elif generated_sample.ndim == 2:
+		generated_sample = generated_sample.squeeze(0)
+	generated_sample = generated_sample.to(device).float()
 
-    # Order labels by their defined sequence (LABEL_NAMES)
-    ordered_items = sorted(mean_spectra_dict.items(), key=lambda kv: LABEL_NAMES.index(label_correspondence[kv[0]]))
+	# Order labels by their defined sequence (LABEL_NAMES)
+	ordered_items = sorted(mean_spectra_dict.items(), key=lambda kv: LABEL_NAMES.index(label_correspondence[kv[0]]))
 
-    fig, axes = plt.subplots(len(LABEL_NAMES), 1, figsize=(10, 2.5 * len(LABEL_NAMES)), sharex=True)
+	fig, axes = plt.subplots(len(LABEL_NAMES), 1, figsize=(10, 2.5 * len(LABEL_NAMES)), sharex=True)
 
-    if len(LABEL_NAMES) == 1:
-        axes = [axes]
+	if len(LABEL_NAMES) == 1:
+		axes = [axes]
 
-    for i, (label_id, mean_spec) in enumerate(ordered_items):
-        label_name = label_correspondence[label_id]
-        color = LABEL_TO_COLOR.get(label_name, 'C0')
-        ax = axes[i]
+	for i, (label_id, (mean_spec, std_spec)) in enumerate(ordered_items):
+		label_name = label_correspondence[label_id]
+		color = LABEL_TO_COLOR.get(label_name, 'C0')
+		ax = axes[i]
+		mean_spec = mean_spec.squeeze().to(device).float()
+		std_spec = std_spec.squeeze().to(device).float()
 
-        mean_spec = mean_spec.squeeze().to(device).float()
+		# Compute PIKE distance between mean and generated spectrum
+		try:
+			pike_val = calculate_PIKE_gpu(mean_spec, generated_sample)
+		except Exception:
+			pike_val = float('nan')
 
-        # Compute PIKE distance between mean and generated spectrum
-        try:
-            pike_val = calculate_PIKE_gpu(mean_spec, generated_sample)
-        except Exception:
-            pike_val = float('nan')
+		x_axis = np.arange(mean_spec.shape[-1])
+		# Clip lower bound to zero
+		lower = np.maximum((mean_spec - std_spec).cpu().numpy(), 0)
+		upper = (mean_spec + std_spec).cpu().numpy()
+		ax.fill_between(x_axis,
+				lower,
+				upper,
+				color='lightgrey', alpha=0.5, label='Std')
+		# Plot mean (thin black)
+		ax.plot(x_axis, mean_spec.cpu().numpy(), color='black', linewidth=1.0, label=f'Mean {label_name}')
+		# Plot generated (label color)
+		ax.plot(x_axis, generated_sample.cpu().numpy(), color=color, linewidth=2.0, label='Generated', alpha=0.8)
 
-        # Plot mean (colored) and generated (gray dashed)
-        ax.plot(generated_sample.cpu().numpy(), color='lightgray', linestyle='--', linewidth=1.2, label='Generated')
-        ax.plot(mean_spec.cpu().numpy(), color=color, linewidth=2.0, label=f'Mean {label_name}', alpha=0.7)
+		ax.set_ylabel("Intensity", fontsize=9)
+		ax.set_title(f"{label_name}  (PIKE={pike_val:.4f})", fontsize=10)
+		ax.legend(loc='upper right', fontsize='x-small')
 
-        ax.set_ylabel("Intensity", fontsize=9)
-        ax.set_title(f"{label_name}  (PIKE={pike_val:.4f})", fontsize=10)
-        ax.legend(loc='upper right', fontsize='x-small')
-
-    axes[-1].set_xlabel("m/z index")
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
-    plt.close(fig)
-    logger.info(f"✅ Saved combined comparison plot → {save_path}")
+	axes[-1].set_xlabel("m/z index")
+	plt.tight_layout()
+	plt.savefig(save_path, dpi=300)
+	plt.close(fig)
+	logger.info(f"✅ Saved combined comparison plot → {save_path}")

@@ -225,7 +225,7 @@ def generate_spectra_per_label_ddpm(model, label_correspondence, n_samples, time
     num_classes = len(label_correspondence)
 
     for label_id, label_name in label_correspondence.items():
-        logger.info(f"Generating diffusion samples for label: {label_name}")
+        logger.info(f"Generating diffusion samples for label: {label_name}") if logger else None
 
         # --- Create correct one-hot context for that label ---
         c = torch.zeros(n_samples, num_classes, device=device)
