@@ -262,16 +262,17 @@ def compute_mean_spectra_per_label(loader, device=None, logger=None):
     y = torch.cat(all_y, dim=0).to(device)
 
     unique_labels = torch.unique(y)
-    mean_spectra = {}
+    mean_std_spectra = {}
 
     for label in unique_labels:
         mask = (y == label)
         mean_spec = X[mask].mean(dim=0, keepdim=True)
-        mean_spectra[int(label.item())] = mean_spec
+        std_spec = X[mask].std(dim=0, keepdim=True)
+        mean_std_spectra[int(label.item())] = (mean_spec, std_spec)
 
         if logger:
-            logger.info(f"Label {int(label.item())}: {mask.sum().item()} samples, mean spectrum shape {mean_spec.shape}")
+            logger.info(f"Label {int(label.item())}: {mask.sum().item()} samples, mean/std spectrum shape {mean_spec.shape}")
         else:
-            print(f"Label {int(label.item())}: {mask.sum().item()} samples, mean spectrum shape {mean_spec.shape}")
+            print(f"Label {int(label.item())}: {mask.sum().item()} samples, mean/std spectrum shape {mean_spec.shape}")
 
-    return mean_spectra, X, y
+    return mean_std_spectra
