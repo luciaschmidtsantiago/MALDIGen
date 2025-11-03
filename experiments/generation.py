@@ -11,7 +11,7 @@ from dataloader.data import load_data
 # ============================================================
 # ================ MODEL GENERATION HELPER ===================
 # ============================================================
-def generate_samples(model, model_type, device, label_id, num_samples, config, label_convergence=None):
+def generate_samples(model, model_type, device, label_id, num_samples, config):
     """
     Generate synthetic spectra for one label using the correct method for each model type.
     """
@@ -19,20 +19,18 @@ def generate_samples(model, model_type, device, label_id, num_samples, config, l
     model.to(device)
 
     if model_type == "vae":
-        # VAE: use model.sample or generate_spectra_per_label_cvae
-        from models.VAE import generate_spectra_per_label_cvae
-        spectra = generate_spectra_per_label_cvae(model, label_convergence, num_samples, device)
-        return spectra
+        y_species = torch.full((num_samples,), label_id, dtype=torch.long, device=device)
+        generated = model.sample(y_species)
+        return generated
 
     elif model_type == "gan":
-        # GAN: use model.generate or generate_spectra_per_label_cgan
-        from models.GAN import generate_spectra_per_label_cgan
-        spectra = generate_spectra_per_label_cgan(model, label_convergence, num_samples, config.get('latent_dim', 32), device)
-        return spectra
+        y_species = torch.full((num_samples,), label_id, dtype=torch.long, device=device)
+        z = torch.randn(num_samples, config.get('latent_dim', 32), device=device)
+        with torch.no_grad():
+            generated = model.forward_G(z, y_species)
+        return generated
 
     elif model_type == "dm":
-        # Diffusion: use generate_spectra_per_label_ddpm
-        from models.DM import generate_spectra_per_label_ddpm
         timesteps = config.get('timesteps', 500)
         beta1 = config.get('beta1', 1e-4)
         beta2 = config.get('beta2', 0.02)
@@ -40,15 +38,28 @@ def generate_samples(model, model_type, device, label_id, num_samples, config, l
         a_t = 1 - b_t
         ab_t = torch.cumsum(a_t.log(), dim=0).exp()
         ab_t[0] = 1.0
-        # Pass logger argument (None is fine for generation)
-        spectra = generate_spectra_per_label_ddpm(model, label_convergence, num_samples, timesteps, a_t, b_t, ab_t, None, device)
-        # --- Denormalize generated spectra and fix shape to [N, 6000]
-        for label_name, arr in spectra.items():
-            # arr: [N, 1, 6000] -> [N, 6000]
-            if isinstance(arr, np.ndarray) and arr.ndim == 3 and arr.shape[1] == 1:
-                arr = arr.squeeze(1)
-                spectra[label_name] = arr
-        return spectra
+
+        # --- Create correct one-hot context for that label ---
+        c = torch.zeros(num_samples, config.get('num_classes', 6), device=device)
+        c[:, label_id] = 1.0
+
+        # --- Start from Gaussian noise ---
+        L = model.length
+        x = torch.randn(num_samples, model.in_channels, L, device=device)
+
+        # --- Diffusion sampling ---
+        with torch.no_grad():
+            for t_inv in tqdm(range(timesteps, 0, -1)):
+                t = torch.full((num_samples,), t_inv, device=device, dtype=torch.long)
+                t_norm = (t.float() / float(timesteps)).view(-1, 1)
+                eps = model(x, t_norm, c)
+                ab = ab_t[t].view(num_samples, 1, 1)
+                a = a_t[t].view(num_samples, 1, 1)
+                b = b_t[t].view(num_samples, 1, 1)
+                x = (x - (b / (1 - ab).sqrt()) * eps) / a.sqrt()
+                if t_inv > 1:
+                    x += b.sqrt() * torch.randn_like(x)
+        return x.squeeze(1)
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -178,15 +189,15 @@ def main():
 
     # --- Define models and output directories ---
     model_paths = {
-        # "cvae_MLP3_32": "results/vae/cvae_MLP3_32",
-        # "cvae_CNN3_8_MxP": "results/vae/cvae_CNN3_8_MxP",
-        # "cgan_MLP3_32_weighted": "results/gan/cgan_MLP3_32_weighted",
-        # "cgan_CNN3_32_weighted": "results/gan/cgan_CNN3_32_weighted",
-        "dm_default": "results/dm/dm_default",
+        "cvae_MLP3_32": "results/vae/cvae_MLP3_32",
+        "cvae_CNN3_8_MxP": "results/vae/cvae_CNN3_8_MxP",
+        "cgan_MLP3_32_weighted": "results/gan/cgan_MLP3_32_weighted",
+        "cgan_CNN3_32_weighted": "results/gan/cgan_CNN3_32_weighted",
+        "dm_S": "results/dm/dm_S",
+        "dm_M": "results/dm/dm_M",
+        "dm_L": "results/dm/dm_L",
+        "dm_XL": "results/dm/dm_XL",
         "dm_deep": "results/dm/dm_deep",
-        "dm_wide": "results/dm/dm_wide",
-        "dm_medium": "results/dm/dm_medium",
-        "dm_small": "results/dm/dm_small",
     }
 
     pickle_marisma = "pickles/MARISMa_study.pkl"
@@ -229,11 +240,12 @@ def main():
         print(f"  Found {len(labels)} labels: {labels}")
 
         print(f"  Generating {num_samples} samples per label...")
-        for lbl_str in tqdm(labels, desc=f"{model_name} [labels]"):
+        for lbl_str in labels:
             lbl = int(lbl_str)
             lbl_name = label_convergence[lbl_str]
             print(f"    → Generating for label {lbl_name} (id={lbl})...")
-            spectra = generate_samples(model, model_type, device, lbl, num_samples, config, label_convergence=label_convergence)
+            spectra = generate_samples(model, model_type, device, lbl, num_samples, config)
+            spectra = spectra.detach().cpu().numpy()
 
             out_path = os.path.join(out_dir, f"{lbl}_{lbl_name}.npy")
             np.save(out_path, spectra)
