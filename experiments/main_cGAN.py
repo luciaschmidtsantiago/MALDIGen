@@ -17,9 +17,9 @@ from pytorch_model_summary import summary
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator, ConditionalGAN, generate_spectra_per_label_cgan
-from dataloader.data import compute_mean_spectra_per_label, load_data, get_dataloaders
+from dataloader.data import compute_summary_spectra_per_label, load_data, get_dataloaders
 from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan, get_and_log
-from utils.visualization import plot_generated_spectra_per_label, plot_meanVSgenerated
+from utils.visualization import plot_generated_spectra_per_label, plot_generated_vs_all_means
 from losses.PIKE_GPU import calculate_pike_matrix
 from utils.test_utils import write_metadata_csv
 
@@ -44,9 +44,11 @@ def main():
     # ============================================================
     # DIRECTORIES & LOGGING
     # ============================================================
-    gan_results_dir = os.path.join(config['results_dir'], 'gan')
-    os.makedirs(gan_results_dir, exist_ok=True)
-    results_path = os.path.join(gan_results_dir, name)
+    base_results = config.get('results_dir', 'results')
+    results_path = os.path.join(base_results, 'gan', name)
+    plots_path = os.path.join(results_path, 'plots')
+    os.makedirs(results_path, exist_ok=True)
+    os.makedirs(plots_path, exist_ok=True)
     logger = setuplogging(name, mode, results_path)
     logger.info(f"Using config file: {args.config}")
 
@@ -186,89 +188,110 @@ def main():
     # ============================================================
     # EVALUATION
     # ============================================================
-    logger.info("=" * 80)
-    logger.info("EVALUATION")
-    logger.info("=" * 80)   
-    criterion = torch.nn.BCELoss()
+    if args.evaluation:
+        logger.info("=" * 80)
+        logger.info("EVALUATION")
+        logger.info("=" * 80)   
+        criterion = torch.nn.BCELoss()
 
-    val_loss, val_d, val_g = evaluation_gan(model, val_loader, criterion, config['latent_dim'], device)
-    logger.info(f"Validation loss: {val_loss:.4f} (D={val_d:.4f}, G={val_g:.4f})")
+        val_loss, val_d, val_g = evaluation_gan(model, val_loader, criterion, config['latent_dim'], device)
+        logger.info(f"Validation loss: {val_loss:.4f} (D={val_d:.4f}, G={val_g:.4f})")
 
-    test_loss, test_d, test_g = evaluation_gan(model, test_loader, criterion, config['latent_dim'], device)
-    logger.info(f"Test loss: {test_loss:.4f} (D={test_d:.4f}, G={test_g:.4f})")
+        test_loss, test_d, test_g = evaluation_gan(model, test_loader, criterion, config['latent_dim'], device)
+        logger.info(f"Test loss: {test_loss:.4f} (D={test_d:.4f}, G={test_g:.4f})")
 
     # ============================================================
     # GENERATION
     # ============================================================
     if args.generation:
-        model.eval()
-
-        logger.info("=" * 80)
         logger.info("SPECTRA GENERATION")
-        logger.info("=" * 80)
 
         # Label correspondence for mapping
         label_correspondence = train.label_convergence
-        logger.info(f"Label correspondence: {label_correspondence}")
         label_ids = sorted(label_correspondence.keys())
         label_names = [label_correspondence[i] for i in label_ids]
+        name_to_index = {v: k for k, v in label_correspondence.items()}
         logger.info(f"Generating conditional samples for {len(label_names)} labels: {label_names}")
 
-        # Compute mean spectra for each label in train set
-        mean_std_spectra = compute_mean_spectra_per_label(train_loader, device, logger)
-        mean_spectra_list = [mean_spectra_train[i].squeeze(0) for i in range(len(mean_spectra_train))]
+        # --- Compute mean and std spectra from train set ---
+        train_loader_idx = []
+        for x, y in train_loader:
+            if y.ndim > 1:
+                y = y.argmax(dim=1)
+            train_loader_idx.append((x, y))
+        summary_mean_spectra = compute_summary_spectra_per_label(train_loader_idx, device)
 
         # Number of synthetic spectra to generate per label
         n_generate = args.n_generate
+        start_all = time.time()
         generated_spectra = generate_spectra_per_label_cgan(model, label_correspondence, n_generate, latent_dim, device)
-
-        # ---- COMPUTE PIKE MATRIX
-        logger.info("\n--- Computing PIKE matrix for generated spectra ---")
-        calculate_pike_matrix(generated_spectra, mean_spectra_train, label_correspondence, device, results_path=results_path, saving=True)
-
-        # ---- PLOT GENERATED SPECTRA PER LABEL
-        n_plot = 5
-        plots_path = os.path.join(results_path, 'plots')
-        os.makedirs(plots_path, exist_ok=True)
-        for label_name, spectra in generated_spectra.items():
-            # Find the corresponding mean spectrum for this label (from train set)
-            mean_spec = mean_spectra_train[[k for k, v in label_correspondence.items() if v == label_name][0]].cpu().numpy().squeeze()
-            plot_generated_spectra_per_label(spectra, mean_spec, label_name, n_plot, plots_path)
-
-
-        # ---- PLOT GENERATED SPECTRA WRT ALL LABEL MEANS & TIME GENERATION ----
-        gen_times = []
-        with torch.no_grad():
-            for label_id in label_ids:
-                label_name = label_correspondence[label_id]
-
-                # Prepare conditional inputs
-                y_species = torch.tensor([label_id], dtype=torch.long, device=device)
-                y_amr = None  # optional conditioning; keep as None if unused
-
-                # Latent noise vector
-                z = torch.randn(1, latent_dim, device=device)
-
-                start = time.time()
-                sample = model.forward_G(z, y_species, y_amr).squeeze(0)  # [image_dim]
-                end = time.time()
-                gen_times.append(end - start)
-
-                # Save plot comparing generated vs mean spectrum
-                saving_path = os.path.join(plots_path, f'cGAN_generated_{label_name}.png')
-                plot_meanVSgenerated(sample, mean_spectra_list, saving_path)
-                logger.info(f"Generated sample for {label_name} → saved to {saving_path}")
-
-        # === Compute and log average generation time ===
-        if gen_times:
-            avg_gen_time = sum(gen_times) / len(gen_times)
-            metadata['avg_generation_time'] = avg_gen_time
-            logger.info(f"Average generation time per spectrum: {avg_gen_time:.6f} sec")
+        end_all = time.time()
+        total_time = end_all - start_all
+        total_samples = sum(v.shape[0] for v in generated_spectra.values()) if isinstance(generated_spectra, dict) else 0
+        per_sample = total_time / total_samples if total_samples > 0 else float('nan')
+        logger.info(f"Total generation time: {total_time:.3f}s — {per_sample:.6f}s per sample ({total_samples} samples)")
+        metadata['avg_reconstruction_time'] = 0
+        metadata['avg_generation_time'] = per_sample
 
         # Update metadata and save to config
         config['metadata'] = metadata
         with open(args.config, 'w') as f:
             yaml.dump(config, f)
+
+        # --- PIKE matrix ---
+        logger.info("Computing PIKE matrix for generated spectra")
+        mean_spectra_only = {k: v[0] for k, v in summary_mean_spectra.items()}
+        calculate_pike_matrix(generated_spectra, mean_spectra_only, label_correspondence, device, results_path=results_path, saving=True)
+
+        # --- Plot only one generated spectrum per label against mean and std spectra ---
+        for label_name, spectra in generated_spectra.items():
+            # Select one generated sample (first sample)
+            sample = spectra[0]
+            save_path = os.path.join(plots_path, f"{label_name}")
+            plot_generated_vs_all_means(sample, summary_mean_spectra, label_correspondence, save_path, logger)
+
+            # --- Call plot_generated_spectra_per_label for each label ---
+            n_samples_to_plot = 5  # or any number you want to plot per label
+            try:
+                mean_std_minmax = summary_mean_spectra[name_to_index[label_name]]
+            except KeyError:
+                raise KeyError(f"Label name {label_name} not found in label_correspondence")
+            plot_generated_spectra_per_label(spectra, mean_std_minmax, label_name, n_samples_to_plot, plots_path)
+
+
+        # # ---- PLOT GENERATED SPECTRA WRT ALL LABEL MEANS & TIME GENERATION ----
+        # gen_times = []
+        # with torch.no_grad():
+        #     for label_id in label_ids:
+        #         label_name = label_correspondence[label_id]
+
+        #         # Prepare conditional inputs
+        #         y_species = torch.tensor([label_id], dtype=torch.long, device=device)
+        #         y_amr = None  # optional conditioning; keep as None if unused
+
+        #         # Latent noise vector
+        #         z = torch.randn(1, latent_dim, device=device)
+
+        #         start = time.time()
+        #         sample = model.forward_G(z, y_species, y_amr).squeeze(0)  # [image_dim]
+        #         end = time.time()
+        #         gen_times.append(end - start)
+
+        #         # Save plot comparing generated vs mean spectrum
+        #         saving_path = os.path.join(plots_path, f'cGAN_generated_{label_name}.png')
+        #         plot_meanVSgenerated(sample, mean_spectra_list, saving_path)
+        #         logger.info(f"Generated sample for {label_name} → saved to {saving_path}")
+
+        # # === Compute and log average generation time ===
+        # if gen_times:
+        #     avg_gen_time = sum(gen_times) / len(gen_times)
+        #     metadata['avg_generation_time'] = avg_gen_time
+        #     logger.info(f"Average generation time per spectrum: {avg_gen_time:.6f} sec")
+
+        # # Update metadata and save to config
+        # config['metadata'] = metadata
+        # with open(args.config, 'w') as f:
+        #     yaml.dump(config, f)
 
     # Append to CSV
     write_metadata_csv(metadata, config, name)
