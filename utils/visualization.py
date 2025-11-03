@@ -299,7 +299,7 @@ def plot_reconstructions_conditional(model, data, n_samples, results_path, pike_
 	plt.close()
 	print(f"ConditionalVAE reconstructions plot saved to: {plot_path}")
 
-def plot_generated_spectra_per_label(generated_spectra, mean_std_tuple, label_name, n_samples, results_path):
+def plot_generated_spectra_per_label(generated_spectra, summary_mean, label_name, n_samples, results_path):
 	"""
 	Plot up to n_samples generated spectra for a label in a single column (each spectrum in a row), overlaying mean and std spectrum.
 	Each subplot: std fill (light grey, clipped to zero), mean (thin black), generated (label color), PIKE value in title.
@@ -314,7 +314,7 @@ def plot_generated_spectra_per_label(generated_spectra, mean_std_tuple, label_na
 	n_plot = min(n_samples, n_total)
 	idxs = np.random.choice(n_total, n_plot, replace=False)
 	sampled_spectra = generated_spectra[idxs]
-	mean_spec, std_spec = mean_std_tuple
+	mean_spec, std_spec, max_spec, min_spec = summary_mean
 	from losses.PIKE_GPU import calculate_PIKE_gpu
 	label_to_color = LABEL_TO_COLOR
 	def to_numpy(x):
@@ -335,7 +335,12 @@ def plot_generated_spectra_per_label(generated_spectra, mean_std_tuple, label_na
 			return torch.tensor(x, dtype=torch.float32)
 	mean_spec = to_tensor(mean_spec).squeeze().float()
 	std_spec = to_tensor(std_spec).squeeze().float()
+	max_spec = to_tensor(max_spec).squeeze().float()
+	min_spec = to_tensor(min_spec).squeeze().float()
+
 	color = label_to_color.get(label_name, 'blue')
+
+	# PLOT WITH MEAN AND STD
 	fig, axes = plt.subplots(n_plot, 1, figsize=(10, 2.5 * n_plot), sharex=True)
 	if n_plot == 1:
 		axes = [axes]
@@ -358,8 +363,34 @@ def plot_generated_spectra_per_label(generated_spectra, mean_std_tuple, label_na
 		ax.legend(loc='upper right', fontsize='small')
 	axes[-1].set_xlabel("m/z index")
 	plt.tight_layout()
-	plot_path = os.path.join(results_path, f"Samples_{label_name}.png")
-	plt.savefig(plot_path)
+	plot_path = os.path.join(results_path, f"Samples_{label_name}_std.png")
+	plt.savefig(plot_path, dpi=600)
+	plt.close(fig)
+	print(f"Saved combined plot: {plot_path}")
+
+	# PLOT WITH MEAN AND MIN/MAX
+	fig, axes = plt.subplots(n_plot, 1, figsize=(10, 2.5 * n_plot), sharex=True)
+	if n_plot == 1:
+		axes = [axes]
+	x_axis = np.arange(mean_spec.shape[-1])
+	for i in range(n_plot):
+		ax = axes[i]
+		gen_spec = sampled_spectra[i]
+		gen_spec_t = to_tensor(gen_spec)
+		try:
+			pike_val = calculate_PIKE_gpu(mean_spec, gen_spec_t)
+		except Exception:
+			pike_val = float('nan')
+		ax.fill_between(x_axis, min_spec, max_spec, color='lightgrey', alpha=0.5, label='Std')
+		ax.plot(x_axis, to_numpy(mean_spec), color='black', linewidth=1.0, label='Mean')
+		ax.plot(x_axis, to_numpy(gen_spec), color=color, linewidth=2.0, label=f'Generated #{i+1}', alpha=0.8)
+		ax.set_ylabel("Intensity")
+		ax.set_title(f"{label_name} - Generated #{i+1}\nPIKE={pike_val:.4f}")
+		ax.legend(loc='upper right', fontsize='small')
+	axes[-1].set_xlabel("m/z index")
+	plt.tight_layout()
+	plot_path = os.path.join(results_path, f"Samples_{label_name}_minmax.png")
+	plt.savefig(plot_path, dpi=600)
 	plt.close(fig)
 	print(f"Saved combined plot: {plot_path}")
 
@@ -697,29 +728,21 @@ def plot_meanVSgenerated(generated_sample, mean_spectra, results_path):
 
 
 ######## DM ########
-def plot_generated_vs_all_means(generated_sample, mean_spectra_dict, label_correspondence, save_path, logger):
+def plot_generated_vs_all_means(generated_sample, summary_spectra, label_correspondence, plots_path, logger):
 	"""
 	Plot a single generated spectrum vs. the mean and std spectra of all labels (6 subplots).
 	Each subplot: colored = generated, thin black = mean, light grey fill = std.
 	"""
 	device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-	# Ensure shapes
-	if generated_sample.ndim == 3:
-		generated_sample = generated_sample.squeeze(0).squeeze(0)
-	elif generated_sample.ndim == 2:
-		generated_sample = generated_sample.squeeze(0)
 	generated_sample = generated_sample.to(device).float()
 
 	# Order labels by their defined sequence (LABEL_NAMES)
-	ordered_items = sorted(mean_spectra_dict.items(), key=lambda kv: LABEL_NAMES.index(label_correspondence[kv[0]]))
+	ordered_items = sorted(summary_spectra.items(), key=lambda kv: LABEL_NAMES.index(label_correspondence[kv[0]]))
 
+	# PLOT WITH MEAN AND STD
 	fig, axes = plt.subplots(len(LABEL_NAMES), 1, figsize=(10, 2.5 * len(LABEL_NAMES)), sharex=True)
-
-	if len(LABEL_NAMES) == 1:
-		axes = [axes]
-
-	for i, (label_id, (mean_spec, std_spec)) in enumerate(ordered_items):
+	for i, (label_id, (mean_spec, std_spec, _, _)) in enumerate(ordered_items):
 		label_name = label_correspondence[label_id]
 		color = LABEL_TO_COLOR.get(label_name, 'C0')
 		ax = axes[i]
@@ -751,6 +774,43 @@ def plot_generated_vs_all_means(generated_sample, mean_spectra_dict, label_corre
 
 	axes[-1].set_xlabel("m/z index")
 	plt.tight_layout()
-	plt.savefig(save_path, dpi=300)
+	save_path = plots_path + '_means_std.png'
+	plt.savefig(save_path, dpi=600)
+	plt.close(fig)
+	logger.info(f"✅ Saved combined comparison plot → {save_path}")
+
+	# PLOT WITH MEAN AND MIN/MAX
+	fig, axes = plt.subplots(len(LABEL_NAMES), 1, figsize=(10, 2.5 * len(LABEL_NAMES)), sharex=True)
+	for i, (label_id, (mean_spec, _, max_spec, min_spec)) in enumerate(ordered_items):
+		label_name = label_correspondence[label_id]
+		color = LABEL_TO_COLOR.get(label_name, 'C0')
+		ax = axes[i]
+		mean_spec = mean_spec.squeeze().to(device).float()
+		std_spec = std_spec.squeeze().to(device).float()
+
+		# Compute PIKE distance between mean and generated spectrum
+		try:
+			pike_val = calculate_PIKE_gpu(mean_spec, generated_sample)
+		except Exception:
+			pike_val = float('nan')
+
+		x_axis = np.arange(mean_spec.shape[-1])
+		ax.fill_between(x_axis,
+				min_spec.cpu().numpy().squeeze(),
+				max_spec.cpu().numpy().squeeze(),
+				color='lightgrey', alpha=0.5, label='MinMax')
+		# Plot mean (thin black)
+		ax.plot(x_axis, mean_spec.cpu().numpy(), color='black', linewidth=1.0, label=f'Mean {label_name}')
+		# Plot generated (label color)
+		ax.plot(x_axis, generated_sample.cpu().numpy(), color=color, linewidth=2.0, label='Generated', alpha=0.8)
+
+		ax.set_ylabel("Intensity", fontsize=9)
+		ax.set_title(f"{label_name}  (PIKE={pike_val:.4f})", fontsize=10)
+		ax.legend(loc='upper right', fontsize='x-small')
+
+	axes[-1].set_xlabel("m/z index")
+	plt.tight_layout()
+	save_path = plots_path + '_means_minmax.png'
+	plt.savefig(save_path, dpi=600)
 	plt.close(fig)
 	logger.info(f"✅ Saved combined comparison plot → {save_path}")
