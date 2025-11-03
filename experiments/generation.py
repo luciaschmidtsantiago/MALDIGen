@@ -59,7 +59,11 @@ def generate_samples(model, model_type, device, label_id, num_samples, config):
                 x = (x - (b / (1 - ab).sqrt()) * eps) / a.sqrt()
                 if t_inv > 1:
                     x += b.sqrt() * torch.randn_like(x)
-        return x.squeeze(1)
+
+        # denormalize Diffusion spectra
+        from experiments.main_DM import denormalize_spectra
+        spectra = denormalize_spectra(x).squeeze(1)
+        return spectra
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -189,10 +193,10 @@ def main():
 
     # --- Define models and output directories ---
     model_paths = {
-        "cvae_MLP3_32": "results/vae/cvae_MLP3_32",
-        "cvae_CNN3_8_MxP": "results/vae/cvae_CNN3_8_MxP",
-        "cgan_MLP3_32_weighted": "results/gan/cgan_MLP3_32_weighted",
-        "cgan_CNN3_32_weighted": "results/gan/cgan_CNN3_32_weighted",
+        # "cvae_MLP3_32": "results/vae/cvae_MLP3_32",
+        # "cvae_CNN3_8_MxP": "results/vae/cvae_CNN3_8_MxP",
+        # "cgan_MLP3_32_weighted": "results/gan/cgan_MLP3_32_weighted",
+        # "cgan_CNN3_32_weighted": "results/gan/cgan_CNN3_32_weighted",
         "dm_S": "results/dm/dm_S",
         "dm_M": "results/dm/dm_M",
         "dm_L": "results/dm/dm_L",
