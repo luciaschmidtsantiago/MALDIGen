@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from tqdm import tqdm
 
 from utils.conditional_utils import get_condition, impute_missing_labels, compute_attr_prediction_loss
 
@@ -122,19 +123,6 @@ class ContextUnet1D(nn.Module):
             ))
             in_ch = out_ch
 
-        # # Standard stride=2 deconvs (mirror of down path)
-        # self.up_blocks = nn.ModuleList()
-        # self.up_blocks.append(nn.Sequential(
-        #     nn.ConvTranspose1d(4 * n_feat, n_feat, kernel_size=4, stride=2, padding=1),
-        #     nn.GroupNorm(norm_groups, n_feat),
-        #     nn.ReLU()
-        # ))
-        # self.up_blocks.append(nn.Sequential(
-        #     nn.ConvTranspose1d(2 * n_feat, n_feat, kernel_size=4, stride=2, padding=1),
-        #     nn.GroupNorm(norm_groups, n_feat),
-        #     nn.ReLU()
-        # ))
-
         # --- Output layer ---
         self.out = nn.Sequential(
             nn.Conv1d(2 * n_feat, n_feat, kernel_size=3, padding=1),
@@ -189,33 +177,6 @@ class ContextUnet1D(nn.Module):
         out = self.out(torch.cat([up, downs[0]], dim=1))
         return out
 
-    # def forward(self, x, t, c=None):
-    #     # Encode
-    #     x = self.init_conv(x)
-    #     downs = [x]
-    #     for down in self.down_blocks:
-    #         downs.append(down(downs[-1]))
-
-    #     # Bottleneck
-    #     hiddenvec = self.to_vec(downs[-1])
-
-    #     # Default context
-    #     if c is None:
-    #         c = torch.zeros(x.shape[0], self.n_cfeat, device=x.device, dtype=x.dtype)
-
-    #     # Embeddings
-    #     cemb1 = self.contextembed1(c).view(-1, self.n_feat * 2, 1)
-    #     temb1 = self.timeembed1(t).view(-1, self.n_feat * 2, 1)
-    #     cemb2 = self.contextembed2(c).view(-1, self.n_feat, 1)
-    #     temb2 = self.timeembed2(t).view(-1, self.n_feat, 1)
-
-    #     # Decode
-    #     up1 = self.up0(hiddenvec)
-    #     up2 = self.up_blocks[0](torch.cat([cemb1 * up1 + temb1, downs[-1]], dim=1))
-    #     up3 = self.up_blocks[1](torch.cat([cemb2 * up2 + temb2, downs[-2]], dim=1))
-    #     out = self.out(torch.cat([up3, downs[0]], dim=1))
-    #     return out
-
 def generate_spectra_per_label_ddpm(model, label_correspondence, n_samples, timesteps, a_t, b_t, ab_t, logger, device):
     """
     Generate n_samples per label using the trained diffusion model.
@@ -237,7 +198,7 @@ def generate_spectra_per_label_ddpm(model, label_correspondence, n_samples, time
 
         # --- Diffusion sampling ---
         with torch.no_grad():
-            for t_inv in range(timesteps, 0, -1):
+            for t_inv in tqdm(range(timesteps, 0, -1), desc=f"Sampling {label_name}"):
                 t = torch.full((n_samples,), t_inv, device=device, dtype=torch.long)
                 t_norm = (t.float() / float(timesteps)).view(-1, 1)
                 eps = model(x, t_norm, c)
@@ -253,156 +214,156 @@ def generate_spectra_per_label_ddpm(model, label_correspondence, n_samples, time
     return results
 
 # OUTDATED
-class ConditionalDiffusion(nn.Module):
-    """
-    Conditional Diffusion Model que sigue la misma estructura que VAE/GAN
-    Mantiene API consistente: forward() retorna loss escalar
-    """
-    def __init__(self, denoiser, y_dim, y_embed_dim, label2_dim, timesteps=500, beta1=1e-4, beta2=0.02):
-        super().__init__()
-        self.denoiser = denoiser  # ContextUnet o similar
-        self.y_dim = y_dim
-        self.y_embed_dim = y_embed_dim
-        self.label2_dim = label2_dim
-        self.timesteps = timesteps
+# class ConditionalDiffusion(nn.Module):
+#     """
+#     Conditional Diffusion Model que sigue la misma estructura que VAE/GAN
+#     Mantiene API consistente: forward() retorna loss escalar
+#     """
+#     def __init__(self, denoiser, y_dim, y_embed_dim, label2_dim, timesteps=500, beta1=1e-4, beta2=0.02):
+#         super().__init__()
+#         self.denoiser = denoiser  # ContextUnet o similar
+#         self.y_dim = y_dim
+#         self.y_embed_dim = y_embed_dim
+#         self.label2_dim = label2_dim
+#         self.timesteps = timesteps
         
-        # Embedding para etiquetas multilabel (mismo que VAE/GAN)
-        self.y_embed = nn.Embedding(2, y_embed_dim)  # Para valores 0/1
+#         # Embedding para etiquetas multilabel (mismo que VAE/GAN)
+#         self.y_embed = nn.Embedding(2, y_embed_dim)  # Para valores 0/1
         
-        # Diffusion schedule (DDPM)
-        device = next(denoiser.parameters()).device
-        b_t = (beta2 - beta1) * torch.linspace(0, 1, timesteps + 1, device=device) + beta1
-        a_t = 1 - b_t
-        ab_t = torch.cumsum(a_t.log(), dim=0).exp()
-        ab_t[0] = 1
+#         # Diffusion schedule (DDPM)
+#         device = next(denoiser.parameters()).device
+#         b_t = (beta2 - beta1) * torch.linspace(0, 1, timesteps + 1, device=device) + beta1
+#         a_t = 1 - b_t
+#         ab_t = torch.cumsum(a_t.log(), dim=0).exp()
+#         ab_t[0] = 1
         
-        # Register as buffers (no gradients, moved with model)
-        self.register_buffer('b_t', b_t)
-        self.register_buffer('a_t', a_t)
-        self.register_buffer('ab_t', ab_t)
+#         # Register as buffers (no gradients, moved with model)
+#         self.register_buffer('b_t', b_t)
+#         self.register_buffer('a_t', a_t)
+#         self.register_buffer('ab_t', ab_t)
     
-    def get_condition(self, y, label2):
-        """Reutiliza la función común para generar condiciones"""
-        return get_condition(y, label2, self.y_embed, self.label2_dim)
+#     def get_condition(self, y, label2):
+#         """Reutiliza la función común para generar condiciones"""
+#         return get_condition(y, label2, self.y_embed, self.label2_dim)
     
-    def perturb_input(self, x, t, noise):
-        """Aplica ruido a los datos en el timestep t (funciona para imágenes y datos vectorizados)"""
-        # x: [batch, ...]  t: [batch]  noise: same shape as x
+#     def perturb_input(self, x, t, noise):
+#         """Aplica ruido a los datos en el timestep t (funciona para imágenes y datos vectorizados)"""
+#         # x: [batch, ...]  t: [batch]  noise: same shape as x
         
-        # Adaptar indexing según las dimensiones de x
-        if len(x.shape) == 4:
-            # Formato imagen: [batch, channels, height, width]
-            alpha_bar_t = self.ab_t.sqrt()[t, None, None, None]  
-            one_minus_alpha_bar_t = (1 - self.ab_t[t, None, None, None]).sqrt()
-        elif len(x.shape) == 3:
-            # Formato 3D: [batch, channels, length] 
-            alpha_bar_t = self.ab_t.sqrt()[t, None, None]
-            one_minus_alpha_bar_t = (1 - self.ab_t[t, None, None]).sqrt()
-        elif len(x.shape) == 2:
-            # Formato vectorizado: [batch, features]
-            alpha_bar_t = self.ab_t.sqrt()[t, None]
-            one_minus_alpha_bar_t = (1 - self.ab_t[t, None]).sqrt()
-        else:
-            raise ValueError(f"Formato de entrada no soportado: {x.shape}. Se esperan 2D (vectorizado), 3D o 4D (imágenes)")
+#         # Adaptar indexing según las dimensiones de x
+#         if len(x.shape) == 4:
+#             # Formato imagen: [batch, channels, height, width]
+#             alpha_bar_t = self.ab_t.sqrt()[t, None, None, None]  
+#             one_minus_alpha_bar_t = (1 - self.ab_t[t, None, None, None]).sqrt()
+#         elif len(x.shape) == 3:
+#             # Formato 3D: [batch, channels, length] 
+#             alpha_bar_t = self.ab_t.sqrt()[t, None, None]
+#             one_minus_alpha_bar_t = (1 - self.ab_t[t, None, None]).sqrt()
+#         elif len(x.shape) == 2:
+#             # Formato vectorizado: [batch, features]
+#             alpha_bar_t = self.ab_t.sqrt()[t, None]
+#             one_minus_alpha_bar_t = (1 - self.ab_t[t, None]).sqrt()
+#         else:
+#             raise ValueError(f"Formato de entrada no soportado: {x.shape}. Se esperan 2D (vectorizado), 3D o 4D (imágenes)")
         
-        scaled_x = alpha_bar_t * x
-        scaled_noise = one_minus_alpha_bar_t * noise
-        return scaled_x + scaled_noise
+#         scaled_x = alpha_bar_t * x
+#         scaled_noise = one_minus_alpha_bar_t * noise
+#         return scaled_x + scaled_noise
     
-    def forward(self, x, y, label2):
-        """
-        Forward pass para entrenamiento (compatible con funciones genéricas)
-        Args:
-            x: imágenes [batch, D] o [batch, C, H, W]
-            y: etiquetas multilabel [batch, y_dim] 
-            label2: etiquetas categóricas [batch]
-        Returns:
-            loss: tensor escalar (MSE loss del diffusion)
-        """
-        batch_size = x.shape[0]
-        device = x.device
+#     def forward(self, x, y, label2):
+#         """
+#         Forward pass para entrenamiento (compatible con funciones genéricas)
+#         Args:
+#             x: imágenes [batch, D] o [batch, C, H, W]
+#             y: etiquetas multilabel [batch, y_dim] 
+#             label2: etiquetas categóricas [batch]
+#         Returns:
+#             loss: tensor escalar (MSE loss del diffusion)
+#         """
+#         batch_size = x.shape[0]
+#         device = x.device
         
-        # Generar condición (mismo formato que VAE/GAN)
-        cond = self.get_condition(y, label2)
+#         # Generar condición (mismo formato que VAE/GAN)
+#         cond = self.get_condition(y, label2)
         
-        # Sampling random timesteps
-        t = torch.randint(1, self.timesteps + 1, (batch_size,), device=device)
+#         # Sampling random timesteps
+#         t = torch.randint(1, self.timesteps + 1, (batch_size,), device=device)
         
-        # Generar ruido
-        noise = torch.randn_like(x)
+#         # Generar ruido
+#         noise = torch.randn_like(x)
         
-        # Aplicar ruido (forward diffusion process)
-        x_pert = self.perturb_input(x, t, noise)
+#         # Aplicar ruido (forward diffusion process)
+#         x_pert = self.perturb_input(x, t, noise)
         
-        # Predecir ruido con el modelo
-        pred_noise = self.denoiser(x_pert, t.float() / self.timesteps, c=cond)
+#         # Predecir ruido con el modelo
+#         pred_noise = self.denoiser(x_pert, t.float() / self.timesteps, c=cond)
         
-        # MSE loss entre ruido predicho y real
-        loss = F.mse_loss(pred_noise, noise)
+#         # MSE loss entre ruido predicho y real
+#         loss = F.mse_loss(pred_noise, noise)
         
-        return loss
+#         return loss
     
-    def sample(self, y, label2, batch_size=None, data_shape=None):
-        """
-        Generar muestras mediante reverse diffusion (funciona para imágenes y datos vectorizados)
-        Args:
-            y: etiquetas multilabel deseadas [batch, y_dim]
-            label2: etiquetas categóricas deseadas [batch]
-            batch_size: override del batch size 
-            data_shape: forma de los datos a generar (auto-detecta si es None)
-        Returns:
-            generated_data: datos generados (imágenes o vectores)
-        """
-        if batch_size is None:
-            batch_size = y.shape[0]
+#     def sample(self, y, label2, batch_size=None, data_shape=None):
+#         """
+#         Generar muestras mediante reverse diffusion (funciona para imágenes y datos vectorizados)
+#         Args:
+#             y: etiquetas multilabel deseadas [batch, y_dim]
+#             label2: etiquetas categóricas deseadas [batch]
+#             batch_size: override del batch size 
+#             data_shape: forma de los datos a generar (auto-detecta si es None)
+#         Returns:
+#             generated_data: datos generados (imágenes o vectores)
+#         """
+#         if batch_size is None:
+#             batch_size = y.shape[0]
         
-        device = next(self.parameters()).device
-        y = y.to(device)
-        label2 = label2.to(device)
+#         device = next(self.parameters()).device
+#         y = y.to(device)
+#         label2 = label2.to(device)
         
-        # Generar condición
-        cond = self.get_condition(y, label2)
+#         # Generar condición
+#         cond = self.get_condition(y, label2)
         
-        # Auto-detectar formato basado en el tipo de denoiser
-        if data_shape is not None:
-            # Usar shape explícita
-            x_t = torch.randn(batch_size, *data_shape, device=device)
-        else:
-            # Auto-detectar basado en el modelo
-            if hasattr(self.denoiser, 'input_dim'):
-                # MLPUnet: generar datos vectorizados
-                x_t = torch.randn(batch_size, self.denoiser.input_dim, device=device)
-            elif hasattr(self.denoiser, 'in_channels') and hasattr(self.denoiser, 'h'):
-                # ContextUnet: generar imágenes 
-                x_t = torch.randn(batch_size, self.denoiser.in_channels, self.denoiser.h, self.denoiser.h, device=device)
-            else:
-                raise ValueError("No se pudo auto-detectar el formato. Proporciona data_shape explícitamente.")
+#         # Auto-detectar formato basado en el tipo de denoiser
+#         if data_shape is not None:
+#             # Usar shape explícita
+#             x_t = torch.randn(batch_size, *data_shape, device=device)
+#         else:
+#             # Auto-detectar basado en el modelo
+#             if hasattr(self.denoiser, 'input_dim'):
+#                 # MLPUnet: generar datos vectorizados
+#                 x_t = torch.randn(batch_size, self.denoiser.input_dim, device=device)
+#             elif hasattr(self.denoiser, 'in_channels') and hasattr(self.denoiser, 'h'):
+#                 # ContextUnet: generar imágenes 
+#                 x_t = torch.randn(batch_size, self.denoiser.in_channels, self.denoiser.h, self.denoiser.h, device=device)
+#             else:
+#                 raise ValueError("No se pudo auto-detectar el formato. Proporciona data_shape explícitamente.")
         
-        # Reverse diffusion sampling (DDPM)
-        self.denoiser.eval()
-        with torch.no_grad():
-            for t in range(self.timesteps, 0, -1):
-                t_tensor = torch.full((batch_size,), t, device=device, dtype=torch.long)
+#         # Reverse diffusion sampling (DDPM)
+#         self.denoiser.eval()
+#         with torch.no_grad():
+#             for t in range(self.timesteps, 0, -1):
+#                 t_tensor = torch.full((batch_size,), t, device=device, dtype=torch.long)
                 
-                # Predecir ruido
-                pred_noise = self.denoiser(x_t, t_tensor.float() / self.timesteps, c=cond)
+#                 # Predecir ruido
+#                 pred_noise = self.denoiser(x_t, t_tensor.float() / self.timesteps, c=cond)
                 
-                # Sampling step (simplified DDPM)
-                if t > 1:
-                    z = torch.randn_like(x_t)
-                else:
-                    z = torch.zeros_like(x_t)
+#                 # Sampling step (simplified DDPM)
+#                 if t > 1:
+#                     z = torch.randn_like(x_t)
+#                 else:
+#                     z = torch.zeros_like(x_t)
                 
-                # Reverse step (adaptado a dimensiones dinámicas)
-                alpha_t = self.a_t[t]
-                alpha_bar_t = self.ab_t[t]
-                beta_t = self.b_t[t]
+#                 # Reverse step (adaptado a dimensiones dinámicas)
+#                 alpha_t = self.a_t[t]
+#                 alpha_bar_t = self.ab_t[t]
+#                 beta_t = self.b_t[t]
                 
-                x_t = (1 / alpha_t.sqrt()) * (x_t - (beta_t / (1 - alpha_bar_t).sqrt()) * pred_noise) + beta_t.sqrt() * z
+#                 x_t = (1 / alpha_t.sqrt()) * (x_t - (beta_t / (1 - alpha_bar_t).sqrt()) * pred_noise) + beta_t.sqrt() * z
         
-        return x_t
+#         return x_t
 
-class SemisupervisedConditionalDiffusion(ConditionalDiffusion):
+# class SemisupervisedConditionalDiffusion(ConditionalDiffusion):
     """
     Versión semisupervisada del Conditional Diffusion Model
     Maneja missing values y incluye attribute prediction loss
