@@ -11,7 +11,7 @@ import yaml
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from models.DM import ContextUnet1D, generate_spectra_per_label_ddpm
 from utils.training_utils import setuplogging, get_and_log, perturb_input
-from dataloader.data import load_data, get_dataloaders, compute_mean_spectra_per_label
+from dataloader.data import load_data, get_dataloaders, compute_summary_spectra_per_label
 from losses.PIKE_GPU import calculate_pike_matrix
 from utils.visualization import plot_generated_vs_all_means, save_training_curve, plot_generated_spectra_per_label
 from utils.test_utils import write_metadata_csv
@@ -30,7 +30,7 @@ def denormalize_spectra(x):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--config', default='configs/dm_default.yaml', type=str)
+    p.add_argument('--config', default='configs/dm_S.yaml', type=str)
     p.add_argument('--train', action='store_true', default=False, help='Run training')
     p.add_argument('--evaluation', action='store_true', default=False, help='Run evaluation')
     p.add_argument('--generation', action='store_true', default=False, help='Run generation after training/eval')
@@ -145,7 +145,6 @@ def main():
     logger.info(f"Optimizer: {optim}")
 
     num_params = sum(p.numel() for p in nn_model.parameters() if p.requires_grad)
-    metadata['num_params'] = num_params
 
     # Model summary (optional)
     try:
@@ -248,10 +247,13 @@ def main():
 
         # Get training time
         training_time = time.time() - training_start
-        metadata['training_time_sec'] = training_time
-        metadata['epochs'] = best_epoch + 1
-        metadata['time_per_epoch_sec'] = training_time / max(best_epoch + 1, 1)
-        # Save best model path to config
+        metadata = {
+            "training_time_sec": training_time,
+            "time_per_epoch_sec": training_time / max(best_epoch + 1, 1),
+            "epochs": best_epoch + 1,
+            "total_params": num_params
+        }
+        config['metadata'] = metadata
         config['pretrained_model_path'] = best_model_path
         with open(args.config, 'w') as f:
             yaml.dump(config, f)
@@ -321,18 +323,16 @@ def main():
             if y.ndim > 1:
                 y = y.argmax(dim=1)
             train_loader_idx.append((x, y))
-        mean_std_spectra = compute_mean_spectra_per_label(train_loader_idx, device)
+        summary_mean_spectra = compute_summary_spectra_per_label(train_loader_idx, device)
 
         # --- Denormalize mean and std spectra from [-1,1] → [0,1] and fix shape to [1, 6000]
-        for k in mean_std_spectra:
-            mean_arr, std_arr = mean_std_spectra[k]
-            mean_arr = denormalize_spectra(mean_arr)
-            std_arr = denormalize_spectra(std_arr)
-            if mean_arr.ndim == 3 and mean_arr.shape[1] == 1:
-                mean_arr = mean_arr.squeeze(1)
-            if std_arr.ndim == 3 and std_arr.shape[1] == 1:
-                std_arr = std_arr.squeeze(1)
-            mean_std_spectra[k] = (mean_arr, std_arr)
+        for k in summary_mean_spectra:
+            mean_arr, std_arr, max_arr, min_arr = summary_mean_spectra[k]
+            mean_arr = denormalize_spectra(mean_arr).squeeze(1)
+            std_arr = (std_arr/2).squeeze(1)
+            max_arr = denormalize_spectra(max_arr).squeeze(1)
+            min_arr = denormalize_spectra(min_arr).squeeze(1)
+            summary_mean_spectra[k] = (mean_arr, std_arr, max_arr, min_arr)
 
         # --- Generate spectra per label (Diffusion) ---
         start_all = time.time()
@@ -342,6 +342,7 @@ def main():
         total_samples = sum(v.shape[0] for v in generated_spectra.values()) if isinstance(generated_spectra, dict) else 0
         per_sample = total_time / total_samples if total_samples > 0 else float('nan')
         logger.info(f"Total generation time: {total_time:.3f}s — {per_sample:.6f}s per sample ({total_samples} samples)")
+        metadata['avg_reconstruction_time'] = 0
         metadata['avg_generation_time'] = per_sample
 
         # Update metadata and save to config
@@ -351,7 +352,7 @@ def main():
 
         # --- Denormalize generated spectra and fix shape to [N, 6000]
         for label_name, spectra in generated_spectra.items():
-            arr = denormalize_spectra(spectra)
+            arr = denormalize_spectra(spectra).squeeze(1)
             # arr: [N, 1, 6000] -> [N, 6000]
             if arr.ndim == 3 and arr.shape[1] == 1:
                 arr = arr.squeeze(1)
@@ -360,24 +361,24 @@ def main():
         # --- PIKE matrix ---
         logger.info("Computing PIKE matrix for generated spectra")
         # For PIKE, use only the mean part of mean_std_spectra
-        mean_spectra_only = {k: v[0] for k, v in mean_std_spectra.items()}
+        mean_spectra_only = {k: v[0] for k, v in summary_mean_spectra.items()}
         calculate_pike_matrix(generated_spectra, mean_spectra_only, label_correspondence, device, results_path=results_path, saving=True)
 
         # --- Plot only one generated spectrum per label against mean and std spectra ---
         for label_name, spectra in generated_spectra.items():
             # Select one generated sample (first sample)
             sample = spectra[0]
-            save_path = os.path.join(plots_path, f"{label_name}_vs_means.png")
-            plot_generated_vs_all_means(sample, mean_std_spectra, label_correspondence, save_path, logger)
+            save_path = os.path.join(plots_path, f"{label_name}")
+            plot_generated_vs_all_means(sample, summary_mean_spectra, label_correspondence, save_path, logger)
 
-                # --- Call plot_generated_spectra_per_label for each label ---
+            # --- Call plot_generated_spectra_per_label for each label ---
             n_samples_to_plot = 5  # or any number you want to plot per label
             name_to_index = {v: k for k, v in label_correspondence.items()}
             try:
-                mean_std_tuple = mean_std_spectra[name_to_index[label_name]]
+                mean_std_minmax = summary_mean_spectra[name_to_index[label_name]]
             except KeyError:
                 raise KeyError(f"Label name {label_name} not found in label_correspondence")
-            plot_generated_spectra_per_label(spectra, mean_std_tuple, label_name, n_samples_to_plot, plots_path)
+            plot_generated_spectra_per_label(spectra, mean_std_minmax, label_name, n_samples_to_plot, plots_path)
 
     # Append to CSV
     write_metadata_csv(metadata, config, name)
