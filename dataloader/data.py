@@ -230,19 +230,16 @@ def get_dataloaders(train_ds, val_ds, test_ds, ood_ds, batch_size):
     ood_loader   = DataLoader(ood_ds, batch_size=batch_size)
     return train_loader, val_loader, test_loader, ood_loader
 
-def compute_mean_spectra_per_label(loader, device=None, logger=None):
+def compute_summary_spectra_per_label(loader, device=None, logger=None):
     """
-    Compute the mean spectrum per label from a DataLoader.
-
+    Compute the mean, std, max, and min spectrum per label from a DataLoader.
+    Returns a dictionary mapping label -> (mean_spectrum, std_spectrum, max_spectrum, min_spectrum).
     Args:
-        loader (DataLoader): PyTorch DataLoader returning (x, y) batches.
-        device (torch.device, optional): Device to move tensors to (default: CUDA if available).
-        logger (Logger, optional): Optional logger for info messages.
-
+        loader: DataLoader providing (spectrum, label) batches.
+        device: torch.device to perform computations on. If None, uses cuda if available.
+        logger: Optional logger for logging information.
     Returns:
-        dict[int, torch.Tensor]: Dictionary mapping label_id -> mean_spectrum [1, D].
-        torch.Tensor: All spectra concatenated [N, D].
-        torch.Tensor: All labels concatenated [N].
+        summary_spectra: dict mapping label -> (mean_spectrum, std_spectrum, max_spectrum, min_spectrum).
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -262,17 +259,22 @@ def compute_mean_spectra_per_label(loader, device=None, logger=None):
     y = torch.cat(all_y, dim=0).to(device)
 
     unique_labels = torch.unique(y)
-    mean_std_spectra = {}
+    summary_spectra = {}
 
     for label in unique_labels:
         mask = (y == label)
+
+        # Compute mean and std spectra
         mean_spec = X[mask].mean(dim=0, keepdim=True)
         std_spec = X[mask].std(dim=0, keepdim=True)
-        mean_std_spectra[int(label.item())] = (mean_spec, std_spec)
 
-        if logger:
-            logger.info(f"Label {int(label.item())}: {mask.sum().item()} samples, mean/std spectrum shape {mean_spec.shape}")
-        else:
-            print(f"Label {int(label.item())}: {mask.sum().item()} samples, mean/std spectrum shape {mean_spec.shape}")
+        # Compute global maximum and minimum spectra (per-feature)
+        maximum = X[mask].max(dim=0, keepdim=True)[0]
+        minimum = X[mask].min(dim=0, keepdim=True)[0]
 
-    return mean_std_spectra
+        summary_spectra[int(label.item())] = (mean_spec, std_spec, maximum, minimum)
+
+        msg = f"Label {int(label.item())}: {mask.sum().item()} samples, mean/std spectrum shape {mean_spec.shape}"
+        logger.info(msg) if logger else print(msg)
+
+    return summary_spectra
