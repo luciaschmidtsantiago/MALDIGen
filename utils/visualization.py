@@ -247,6 +247,7 @@ def plot_reconstructions_conditional(model, data, n_samples, results_path, pike_
 		y_amr: Optional AMR labels (tensor or None).
 		random_state: Random seed for reproducibility.
 	"""
+
 	labels = data.labels
 	spectra = data.data
 	np.random.seed(random_state)
@@ -275,19 +276,28 @@ def plot_reconstructions_conditional(model, data, n_samples, results_path, pike_
 			y_amr_t = None
 		mu_e, log_var_e = model.encoder.forward(X, y_species_t, y_amr_t)
 		z = mu_e
-		x_hat = model.decoder.forward(z, y_species_t, y_amr_t).cpu().numpy()
+		x_hat = model.decoder.forward(z, y_species_t, y_amr_t).cpu()
 	fig, axes = plt.subplots(n_samples, 2, figsize=(10, 2.5 * n_samples))
 	for i, idx in enumerate(idxs):
 		orig, orig_label = data[idx]
-		recon = x_hat[i]
-		pike_err = pike_fn(orig, recon)
+		# Ensure orig and recon are tensors
+		if isinstance(orig, np.ndarray):
+			orig_t = torch.tensor(orig, dtype=torch.float32)
+		else:
+			orig_t = orig.detach().cpu() if hasattr(orig, 'detach') else torch.tensor(orig, dtype=torch.float32)
+		recon_t = x_hat[i]
+		if isinstance(recon_t, np.ndarray):
+			recon_t = torch.tensor(recon_t, dtype=torch.float32)
+		else:
+			recon_t = recon_t.detach().cpu() if hasattr(recon_t, 'detach') else torch.tensor(recon_t, dtype=torch.float32)
+		pike_err = pike_fn(orig_t, recon_t)
 		label = label_names[i]
 		color = label_to_color[label] if label in label_to_color else 'blue'
-		axes[i, 0].plot(orig, color=color)
+		axes[i, 0].plot(orig_t.numpy(), color=color)
 		axes[i, 0].set_title(f"Original (idx={idx})\nLabel: {label}")
 		axes[i, 0].set_xlabel('m/z index')
 		axes[i, 0].set_ylabel('Intensity')
-		axes[i, 1].plot(recon, color=color)
+		axes[i, 1].plot(recon_t.numpy(), color=color)
 		axes[i, 1].set_title(f"Reconstruction\nLabel: {label}\nPIKE={pike_err:.4f}")
 		axes[i, 1].set_xlabel('m/z index')
 		axes[i, 1].set_ylabel('Intensity')
@@ -766,7 +776,7 @@ def plot_generated_vs_all_means(generated_sample, summary_spectra, label_corresp
 		# Plot mean (thin black)
 		ax.plot(x_axis, mean_spec.cpu().numpy(), color='black', linewidth=1.0, label=f'Mean {label_name}')
 		# Plot generated (label color)
-		ax.plot(x_axis, generated_sample.cpu().numpy(), color=color, linewidth=2.0, label='Generated', alpha=0.8)
+		ax.plot(x_axis, generated_sample.detach().cpu().numpy(), color=color, linewidth=2.0, label='Generated', alpha=0.8)
 
 		ax.set_ylabel("Intensity", fontsize=9)
 		ax.set_title(f"{label_name}  (PIKE={pike_val:.4f})", fontsize=10)
@@ -802,7 +812,7 @@ def plot_generated_vs_all_means(generated_sample, summary_spectra, label_corresp
 		# Plot mean (thin black)
 		ax.plot(x_axis, mean_spec.cpu().numpy(), color='black', linewidth=1.0, label=f'Mean {label_name}')
 		# Plot generated (label color)
-		ax.plot(x_axis, generated_sample.cpu().numpy(), color=color, linewidth=2.0, label='Generated', alpha=0.8)
+		ax.plot(x_axis, generated_sample.detach().cpu().numpy(), color=color, linewidth=2.0, label='Generated', alpha=0.8)
 
 		ax.set_ylabel("Intensity", fontsize=9)
 		ax.set_title(f"{label_name}  (PIKE={pike_val:.4f})", fontsize=10)
