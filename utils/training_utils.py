@@ -171,14 +171,20 @@ def evaluation(test_loader, model_best):
     kl = 0.
     N = 0.
     with torch.no_grad():
-        for _, test_batch in enumerate(test_loader):
-            test_batch = test_batch.to(device)
-            loss_t, kl_t = model_best.forward(test_batch)
-            batch_size = test_batch.shape[0]
+        for _, batch in enumerate(test_loader):
+            if len(batch) > 1:
+                x, y_species, *maybe_amr = batch
+                y_species = y_species.to(device)
+                y_amr = maybe_amr[0].to(device) if maybe_amr else None
+            else:
+                x, y_species, y_amr = batch, None, None
+            x = x.to(device)
+            
+            loss_batch, KL = model_best.forward(x, y_species, y_amr)
 
-            # Convert summed batch loss to per-sample average
-            loss += loss_t.item()
-            kl   += kl_t.item()
+            # Convert from summed batch loss to per-sample average
+            loss += loss_batch.item()
+            kl   += KL.item()
             N += 1
 
     loss /= N
@@ -261,7 +267,6 @@ def evaluation_cond(test_loader, model_best):
             y_amr = maybe_amr[0].to(device) if maybe_amr else None
 
             loss_batch, KL = model_best.forward(x, y_species, y_amr)
-            batch_size = x.size(0)
 
             # Convert from summed batch loss to per-sample average
             loss += loss_batch.item()
