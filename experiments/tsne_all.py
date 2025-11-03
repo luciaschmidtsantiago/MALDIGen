@@ -73,7 +73,7 @@ def safe_load_array(path, device="cpu"):
     except Exception as e:
         raise RuntimeError(f"Could not load file: {path}\n{e}")
 
-def compute_tsne(tsne_dir, dirs, model_names):
+def compute_tsne(model_names):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pickle_marisma = "pickles/MARISMa_study.pkl"
@@ -142,14 +142,7 @@ def compute_tsne(tsne_dir, dirs, model_names):
         label_convergence.get(str(int(lbl)), str(int(lbl))) for lbl in y_all
     ])
 
-    # Save
-    os.makedirs(tsne_dir, exist_ok=True)
-    X_tsne, labels, label_names, sources = dirs
-    np.save(X_tsne, X_embedded.astype(np.float32))
-    np.save(labels, y_all.astype(np.int16))
-    np.save(label_names, label_names)
-    np.save(sources, src_all)
-    print(f"Saved t-SNE arrays to {tsne_dir}/")
+    return X_embedded, y_all, label_names, src_all
 
 if __name__ == "__main__":
 
@@ -170,9 +163,17 @@ if __name__ == "__main__":
     labels = np.load(os.path.join(tsne_dir, "labels.npy"))
     label_names = np.load(os.path.join(tsne_dir, "label_names.npy"), allow_pickle=True)
     sources = np.load(os.path.join(tsne_dir, "sources.npy"), allow_pickle=True)
-    dirs = [X_tsne, labels, label_names, sources]
 
-    compute_tsne(tsne_dir, dirs, model_names)
+    if True:
+        X_embedded, y_all, label_names, src_all = compute_tsne(model_names)
+
+        # Save
+        os.makedirs(tsne_dir, exist_ok=True)
+        np.save(X_tsne, X_embedded.astype(np.float32))
+        np.save(labels, y_all.astype(np.int16))
+        np.save(label_names, label_names)
+        np.save(sources, src_all)
+        print(f"Saved t-SNE arrays to {tsne_dir}/")
     
     LABEL_NAMES = [
         'Enterobacter_cloacae_complex',
