@@ -67,7 +67,6 @@ def run_experiment(model, train_loader, val_loader, test_loader, config, results
     # Elegir función de entrenamiento dependiendo del tipo de modelo
     is_conditional = isinstance(model, ConditionalVAE)
     training_fn = training_cond if is_conditional else training
-    evaluation_fn = evaluation_cond if is_conditional else evaluation
 
     t_start = time.time()
     [nll_train, nll_val], [kl_train, kl_val], best_model, e = training_fn(
@@ -101,19 +100,7 @@ def run_experiment(model, train_loader, val_loader, test_loader, config, results
     save_training_curve(nll_train, nll_val, results_path)
     plot_nll_vs_kl(nll_train, kl_train, results_path)
 
-    logger.info("=" * 80)
-    logger.info(f"EVALUATION:")
-    logger.info("=" * 80)
-
-    # Evaluate on val set
-    val_loss, kl_loss = evaluation_fn(val_loader, best_model)
-    logger.info(f"Validation ELBO loss: {val_loss:.2f}, KL loss: {kl_loss:.2f}")
-
-    # Evaluate on test set
-    test_loss, test_kl_loss = evaluation_fn(test_loader, best_model)
-    logger.info(f"Test ELBO loss: {test_loss:.2f}, KL loss: {test_kl_loss:.2f}")
-
-    return best_model, [nll_train, nll_val], val_loss, test_loss, metadata
+    return best_model, [nll_train, nll_val], metadata
 
 def training(max_patience, num_epochs, model, optimizer, training_loader, val_loader, scheduler=None, logger=None):
     nll_val = []
