@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from dataloader.MARISMa_Manager import MARISMaManager, MARISMa
+from dataloader.DRIAMS_Manager import DRIAMS_Manager, DRIAMS_Dataset
 from utils.preprocess import SequentialPreprocessor, VarStabilizer, Smoother, BaselineCorrecter, Trimmer, Binner, StdThresholder, LogScaler, MinMaxScaler
 
 
@@ -19,10 +19,8 @@ def collect_species(dataset_path, preprocess_pipeline, species_list, logger):
         arg_str = ", ".join(f"{k}={v!r}" for k, v in args.items())
         logger.info(f"  {i}. {step.__class__.__name__}({arg_str})")
 
-    # Initialize the MALDIManager
-    pickle_path = os.path.join(os.path.dirname(__file__), 'MARISMa_anonymized.pkl')
-    manager = MARISMaManager(dataset_path, presaved=True, pickle_path=pickle_path)
-
+    # Initialize the DRIAMS Manager
+    manager = DRIAMS_Manager(dataset_path)
     # Initialize arrays
     spectra = []
     labels = []
@@ -32,13 +30,8 @@ def collect_species(dataset_path, preprocess_pipeline, species_list, logger):
     for species in species_list:
         logger.info(f"  - {species[0]} {species[1].lower()}")
 
-    # Query the main species
-    logger.info("Querying species data...")
-    species = manager.query_spectra_dict(genus_species=species_list)
-
-    # Create datasets for both main species and Enterobacter species
-    logger.info("Creating datasets...")
-    dataset = MARISMa(species, preprocess_pipeline=preprocess_pipeline)
+    # Create dataset for the species
+    dataset = DRIAMS_Dataset(manager, genus_species=species_list, preprocess_pipeline=preprocess_pipeline)
 
     # Process main species
     logger.info("Processing species spectra...")
@@ -82,8 +75,8 @@ def main(name, preprocess_pipeline, species_list, change_names=None):
     logger = logging.getLogger('report_pickle_logger')
 
     # Define dataset path and save path
-    dataset_path = f"/export/data_ml4ds/bacteria_id/MARISMa"
-    name_pickle = f"MARISMa_study_{name}"
+    dataset_path = "/export/data_ml4ds/bacteria_id/relevant_datasets/DRIAMS_PROCESSED_DATABASE"
+    name_pickle = f"DRIAMS_study_{name}"
     save_path = os.path.join(os.path.dirname(__file__), name_pickle + '.pkl')
 
     # Log session start
