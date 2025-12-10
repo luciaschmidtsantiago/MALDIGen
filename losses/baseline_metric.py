@@ -10,7 +10,8 @@ from tqdm import tqdm
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from PIKE_GPU import calculate_PIKE_gpu, calculate_pike_matrix
-from dataloader.data import load_data, get_dataloaders, compute_mean_spectra_per_label
+from dataloader.data import load_data, get_dataloaders
+from dataloader.data import compute_summary_spectra_per_label
 
 
 def get_fold(train_loader, subset_ratio=0.1, seed=42):
@@ -293,13 +294,14 @@ if __name__ == "__main__":
     X_subset, y_subset = get_fold(train_loader, subset_ratio=0.1, seed=42)
 
     # GET MEAN SPECTRA PER LABEL (FULL TRAIN)
-    # mean_std_spectra = compute_mean_spectra_per_label(train_loader, device)
+    summary_mean_spectra = compute_summary_spectra_per_label(train_loader, device)
+    mean_spectra_only = {k: v[0] for k, v in summary_mean_spectra.items()}
 
     # COMPUTE PIKE of SUBSET VS MEAN
-    # all_pike_per_class = baseline_versus_mean([X_subset, y_subset], mean_spectra_train, device, output_dir)
+    all_pike_per_class = baseline_versus_mean([X_subset, y_subset], mean_spectra_only, device, output_dir)
 
     # COMPUTE PAIRWISE PIKE PER LABEL (SUBSET VS SUBSET)
-    # compute_pairwise_pike_per_label([X_subset, y_subset], device, output_dir, t=8)
+    compute_pairwise_pike_per_label([X_subset, y_subset], device, output_dir, t=8)
 
     # COMPUTE AND APPEND METRICS
     compute_all_baseline_metrics(output_dir, label_convergence, y_subset)
