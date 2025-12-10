@@ -7,6 +7,9 @@ LABEL_TO_HEX = {
     'Klebsiella_Pneumoniae': '#e6f598',
     'Pseudomonas_Aeruginosa': '#66c2a5',
     'Staphylococcus_Aureus': '#5e4fa2',
+    "Enterobacter_Aerogenes": '#2274E6',
+    "Staphylococcus_Saprophyticus" : '#FA84C3',
+    "Proteus_Vulgaris": '#8C543B',
 }
 
 ########## FIXED MARKER MAP FOR DOMAINS ##########
