@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 class MLPEncoder1D(nn.Module):
     def __init__(self, input_dim, num_layers, latent_dim, cond_dim=0):
@@ -287,74 +286,3 @@ class CNNAttenDecoder(nn.Module):
         x = self.deconv(x)
         return x.squeeze(1)
     
-############# CONDITIONING #############
-
-class MLPEncoder_(nn.Module):
-    def __init__(self, D, y_embed_dim, label2_dim, enc_hidden1, enc_hidden2, latent_dim):
-        super().__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(D + y_embed_dim + label2_dim, enc_hidden1), nn.LeakyReLU(),
-            nn.Linear(enc_hidden1, enc_hidden2), nn.LeakyReLU(),
-            nn.Linear(enc_hidden2, 2 * latent_dim)
-        )
-    def forward(self, x, cond):
-        h = torch.cat([x, cond], dim=1)
-        return self.fc(h)
-
-class MLPDecoder(nn.Module):
-    def __init__(self, latent_dim, y_embed_dim, label2_dim, dec_hidden1, dec_hidden2, D):
-        super().__init__()
-        self.fc = nn.Sequential(
-            nn.Linear(latent_dim + y_embed_dim + label2_dim, dec_hidden2), nn.LeakyReLU(),
-            nn.Linear(dec_hidden2, dec_hidden1), nn.LeakyReLU(),
-            nn.Linear(dec_hidden1, D)
-        )
-    def forward(self, z, cond):
-        h = torch.cat([z, cond], dim=1)
-        return self.fc(h)
-
-
-class ConvEncoder(nn.Module):
-    def __init__(self, y_embed_dim, label2_dim, latent_dim, img_shape, enc_hidden2):
-        super().__init__()
-        self.img_shape = img_shape
-        self.conv = nn.Sequential(
-            nn.Conv2d(1, 32, 4, stride=2, padding=1), nn.LeakyReLU(),
-            nn.Conv2d(32, 64, 4, stride=2, padding=1), nn.LeakyReLU(),
-            nn.Conv2d(64, 128, 4, stride=2, padding=1), nn.LeakyReLU(),
-            nn.Flatten()
-        )
-        conv_out_dim = (img_shape[1] // 8) * (img_shape[2] // 8) * 128
-        self.fc = nn.Sequential(
-            nn.Linear(conv_out_dim + y_embed_dim + label2_dim, enc_hidden2), nn.LeakyReLU(),
-            nn.Linear(enc_hidden2, 2 * latent_dim)
-        )
-    def forward(self, x, cond):
-        x = x.view(-1, 1, self.img_shape[1], self.img_shape[2])
-        h = self.conv(x)
-        h = torch.cat([h, cond], dim=1)
-        return self.fc(h)
-
-class ConvDecoder(nn.Module):
-    def __init__(self, y_embed_dim, label2_dim, latent_dim, img_shape, dec_hidden2):
-        super().__init__()
-        self.img_shape = img_shape
-        self.D = img_shape[1] * img_shape[2]
-        self.fc = nn.Sequential(
-            nn.Linear(latent_dim + y_embed_dim + label2_dim, dec_hidden2), nn.LeakyReLU(),
-            nn.Linear(dec_hidden2, (img_shape[1] // 8) * (img_shape[2] // 8) * 128), nn.LeakyReLU()
-        )
-        # Ajusta output_padding en la primera y última capa para obtener [batch, 1, 109, 89]
-        self.deconv = nn.Sequential(
-            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1, output_padding=1), nn.LeakyReLU(),
-            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1, output_padding=0), nn.LeakyReLU(),
-            nn.ConvTranspose2d(32, 1, 4, stride=2, padding=1, output_padding=1)
-        )
-    def forward(self, z, cond):
-        h = torch.cat([z, cond], dim=1)
-        h = self.fc(h)
-        h = h.view(-1, 128, self.img_shape[1] // 8, self.img_shape[2] // 8)
-        x_rec = self.deconv(h)
-        # Recorta si sobra (resulta en [batch, 1, 109, 93], así que se quitan 4 columnas)
-        x_rec = x_rec[:, :, :self.img_shape[1], :self.img_shape[2]]
-        return x_rec.reshape(-1, self.D)  # Garantiza salida [batch, D]

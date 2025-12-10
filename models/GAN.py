@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.conditional_utils import get_condition, impute_missing_labels, compute_attr_prediction_loss
+from utils.conditional_utils import get_condition
 
 ############### GAN ###############
 
@@ -226,9 +226,11 @@ class ConditionalGAN(nn.Module):
         self.y_embed_amr = nn.Embedding(y_amr_dim, y_embed_dim) if (embedding and y_amr_dim > 0) else None
         self.y_amr_dim = y_amr_dim
 
+        self.species_dimension = y_embed_dim if embedding else y_species_dim
+
     def get_cond(self, y_species, y_amr=None):
         return get_condition(
-            y_species, y_amr, 
+            y_species, self.species_dimension, y_amr, 
             self.y_embed_species, self.y_embed_amr,
             embedding=self.embedding
         )
@@ -263,70 +265,3 @@ def generate_spectra_per_label_cgan(model, label_correspondence, n_samples, late
             generated = model.forward_G(z, y_species)
         results[label_name] = generated.detach().cpu()
     return results
-
-
-
-################ Semi-supervised Conditional GAN ###############
-
-class SemisupervisedConditionalGAN(ConditionalGAN):
-    def __init__(self, generator, discriminator, attr_predictor, latent_dim=128, lambda_g=1.0, lambda_d=1.0, alpha=1.0, missing_strategy='soft'):
-        # Inicializar ConditionalGAN base
-        super().__init__(generator, discriminator, latent_dim, lambda_g, lambda_d)
-        
-        # Inferir parámetros automáticamente desde los componentes
-        y_dim = generator.y_embed.num_embeddings
-        y_embed_dim = generator.y_embed.embedding_dim
-        self.label2_dim = generator.label2_dim
-        
-        # Añadir componentes específicos para semisupervised
-        self.attr_predictor = attr_predictor
-        self.y_embed = nn.Embedding(y_dim, y_embed_dim)
-        self.alpha = alpha  # peso para attr_prediction loss
-        
-        # missing_strategy controla cómo manejar missing values para la GAN:
-        # - 'soft': Usar predicciones como probabilidades soft → embedding ponderado
-        # - 'hard': Umbralizar predicciones a 0/1 → embedding tradicional  
-        # - 'ignore': Missing → 0, solo usar observados → más conservador
-        assert missing_strategy in ['soft', 'hard', 'ignore'], f"missing_strategy debe ser 'soft', 'hard' o 'ignore', got {missing_strategy}"
-        self.missing_strategy = missing_strategy
-    
-    def forward(self, x_real, y, label2):
-        # 1. Imputar missing values según la estrategia configurada
-        y_input = impute_missing_labels(x_real, y, label2, self.attr_predictor, self.y_embed, self.label2_dim, self.missing_strategy)
-        
-        # 2. La GAN usa directamente las etiquetas procesadas
-        # get_condition automáticamente detecta si son soft o hard labels
-        gan_loss = super().forward(x_real, y_input, label2)
-        
-        # 3. Pérdida de predicción siempre sobre atributos observados reales
-        attr_pred_loss = compute_attr_prediction_loss(x_real, y, label2, self.attr_predictor, self.y_embed, self.label2_dim)
-        
-        total_loss = gan_loss + self.alpha * attr_pred_loss
-        return total_loss
-    
-    def sample(self, y, label2, batch_size=64, fill_missing='neutral'):
-        """
-        Generar muestras reutilizando ConditionalGAN.sample después de imputar
-        fill_missing: 'neutral' (missing → 0.5) o 'predictor' (usar attr_predictor)
-        """
-        # Imputar missing values para generación
-        y_filled = y.clone().float()
-        
-        for i in range(y.size(1)):
-            missing_idx = (y[:, i] == -1).nonzero(as_tuple=True)[0]
-            if len(missing_idx) > 0:
-                if fill_missing == 'predictor':
-                    # Usar predictor (necesita input x dummy para generación)
-                    x_dummy = torch.zeros((len(missing_idx), 9701), device=y.device)  # TODO: hacer dinámico
-                    y_idx = torch.full((len(missing_idx),), i, dtype=torch.long, device=y.device)
-                    y_emb = self.y_embed(y_idx)
-                    label2_missing = label2[missing_idx]
-                    label2_onehot = F.one_hot(label2_missing, num_classes=self.label2_dim).float()
-                    attr_input = torch.cat([x_dummy, y_emb, label2_onehot], dim=1)
-                    pred = self.attr_predictor(attr_input)
-                    y_filled[missing_idx, i] = pred.squeeze(-1)
-                else:
-                    y_filled[missing_idx, i] = 0.5  # neutral/incierto
-        
-        # Reutilizar el método sample del ConditionalGAN padre
-        return super().sample(y_filled, label2, batch_size)
