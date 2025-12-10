@@ -30,7 +30,7 @@ def denormalize_spectra(x):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--config', default='configs/dm_S.yaml', type=str)
+    p.add_argument('--config', default='configs/dm_deep_extended.yaml', type=str)
     p.add_argument('--train', action='store_true', default=False, help='Run training')
     p.add_argument('--evaluation', action='store_true', default=False, help='Run evaluation')
     p.add_argument('--generation', action='store_true', default=False, help='Run generation after training/eval')

@@ -20,7 +20,7 @@ from pytorch_model_summary import summary
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models.VAE import ConditionalVAE, generate_spectra_per_label_cvae
+from models.VAE import ConditionalVAE, generate_spectra_vae
 from models.Networks import MLPEncoder1D, MLPDecoder1D, CNNDecoder1D, CNNEncoder1D
 from dataloader.data import load_data, get_dataloaders, compute_summary_spectra_per_label
 from utils.training_utils import get_and_log, run_experiment, setuplogging, evaluation
@@ -35,6 +35,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--config', default='configs/cvae_MLP3_32.yaml', type=str)
     p.add_argument('--train', action='store_true', default=False, help='Run training (default: only evaluation/visualization)')
+    p.add_argument('--finetuning', action='store_true', default=False, help='If set, run in finetuning mode (freeze encoder, load pretrained model)')
     p.add_argument('--pike', action='store_true', default=False, help='Calculate PIKE (default: False)')
     p.add_argument('--evaluation', action='store_true', default=False, help='Run evaluation')
     p.add_argument('--generation', action='store_true', default=False, help='Run generation after training/eval')
@@ -48,9 +49,11 @@ def main():
     args = parse_args()
     config = yaml.safe_load(open(args.config))
     metadata = config.get('metadata', {})
-
     name = args.config.split('/')[-1].split('.')[0]
-    mode = 'training' if args.train else 'evaluation'
+    if args.finetuning:
+        mode = 'finetuning'
+    else:
+        mode = 'training' if args.train else 'evaluation'
 
     # ============================================================
     # DIRECTORIES & LOGGING
@@ -144,32 +147,64 @@ def main():
         model = ConditionalVAE(encoder, decoder, y_species_dim, y_embed_dim, y_amr_dim, M, embedding).to(device)
     logger.info(f"MODEL: {model.__class__.__name__}")
 
-    if args.train:
-        # Train the model
-        best_model, [nll_train, nll_val], metadata = run_experiment(model, train_loader, val_loader, test_loader, config, results_path, logger)
-        logger.info(f"Best {model.__class__.__name__} model obtained from training.")
-        pretrained_model = os.path.join(results_path, f"best_model_{name}.pt")
-        torch.save(best_model.state_dict(), pretrained_model)
+    # Assert that --train and --finetuning are mutually exclusive
+    if args.train and args.finetuning:
+        raise ValueError("Arguments --train and --finetuning cannot both be set to True at the same time.")
 
-        # Save metadata and pretrained model to config YAML
-        config['pretrained_model'] = pretrained_model
+    if args.finetuning:
+        # Load pretrained model weights except for embedding layers, and freeze only embeddings
+        logger.info("LOADING PRETRAINED MODEL (EXCLUDING EMBEDDINGS) & FREEZING EMBEDDINGS")
+        pretrained_path = config.get('pretrained_model')
+        if not pretrained_path or not os.path.exists(pretrained_path):
+            raise FileNotFoundError(f"Pretrained model not found: {pretrained_path}")
+        state_dict = torch.load(pretrained_path, map_location=device)
+        # Remove embedding weights from state_dict
+        for key in ['encoder.y_embed.weight', 'decoder.y_embed.weight', 'prior.y_embed.weight']:
+            if key in state_dict:
+                del state_dict[key]
+        model.load_state_dict(state_dict, strict=False)
+        model = model.to(device)
+        # Freeze only the embedding layers
+        if hasattr(model.encoder, "y_embed"):
+            for param in model.encoder.y_embed.parameters():
+                param.requires_grad = False
+        if hasattr(model.decoder, "y_embed"):
+            for param in model.decoder.y_embed.parameters():
+                param.requires_grad = False
+        if hasattr(model, "prior") and hasattr(model.prior, "y_embed"):
+            for param in model.prior.y_embed.parameters():
+                param.requires_grad = False
+        logger.info(f"Loaded pretrained model (excluding embeddings) and frozen embeddings from: {pretrained_path}")
+        # Fine-tune decoder and new embeddings
+        best_model, [nll_train, nll_val], metadata = run_experiment(model, train_loader, val_loader, test_loader, config, results_path, logger)
+        logger.info(f"Best {model.__class__.__name__} model obtained from fine-tuning.")
+        finetuned_model_path = os.path.join(results_path, f"finetuned_model_{name}.pt")
+        torch.save(best_model.state_dict(), finetuned_model_path)
+        config['pretrained_model'] = finetuned_model_path
         config['metadata'] = metadata
         with open(args.config, 'w') as f:
             yaml.dump(config, f)
 
-
-    # ============================================================
-    # LOADING PRETRAINED MODEL
-    # ============================================================
     else:
-        logger.info("LOADING PRETRAINED MODEL")
-        pretrained_path = config.get('pretrained_model')
-        if not pretrained_path or not os.path.exists(pretrained_path):
-            raise FileNotFoundError(f"Pretrained model not found: {pretrained_path}")
-        best_model = model
-        best_model.load_state_dict(torch.load(pretrained_path, map_location=device))
-        best_model = best_model.to(device)
-        logger.info(f"Loaded trained model from {pretrained_path}")
+        if args.train:
+            # Train the model from scratch
+            best_model, [nll_train, nll_val], metadata = run_experiment(model, train_loader, val_loader, test_loader, config, results_path, logger)
+            logger.info(f"Best {model.__class__.__name__} model obtained from training.")
+            pretrained_model = os.path.join(results_path, f"best_model_{name}.pt")
+            torch.save(best_model.state_dict(), pretrained_model)
+            config['pretrained_model'] = pretrained_model
+            config['metadata'] = metadata
+            with open(args.config, 'w') as f:
+                yaml.dump(config, f)
+        else:
+            logger.info("LOADING PRETRAINED MODEL")
+            pretrained_path = config.get('pretrained_model')
+            if not pretrained_path or not os.path.exists(pretrained_path):
+                raise FileNotFoundError(f"Pretrained model not found: {pretrained_path}")
+            best_model = model
+            best_model.load_state_dict(torch.load(pretrained_path, map_location=device))
+            best_model = best_model.to(device)
+            logger.info(f"Loaded trained model from {pretrained_path}")
 
 
     # ============================================================
@@ -225,7 +260,7 @@ def main():
 
         # --- Generate spectra per label ---
         start_all = time.time()
-        generated_spectra = generate_spectra_per_label_cvae(model, label_correspondence, args.n_generate, device)
+        generated_spectra = generate_spectra_vae(model, args.n_generate, device, label_correspondence)
         end_all = time.time()
         total_time = end_all - start_all
         total_samples = sum(v.shape[0] for v in generated_spectra.values()) if isinstance(generated_spectra, dict) else 0
