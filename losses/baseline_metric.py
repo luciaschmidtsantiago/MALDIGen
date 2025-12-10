@@ -4,7 +4,6 @@ import sys
 import csv
 import random
 import numpy as np
-import pandas as pd
 from sklearn.model_selection import StratifiedShuffleSplit
 from tqdm import tqdm
 
