@@ -215,6 +215,7 @@ class MARISMa(Dataset):
     def __init__(self, spectra_dict, preprocess_pipeline=None, visualize=False, path=None):
         self.samples = []
         self.preprocess_pipeline = preprocess_pipeline
+        self.spectra_dict = spectra_dict
 
         for year, genus_dict in spectra_dict.items():
             for genus, species_dict in genus_dict.items():
