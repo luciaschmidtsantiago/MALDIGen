@@ -17,7 +17,7 @@ from pytorch_model_summary import summary
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator, GAN
-from dataloader.data import compute_mean_spectra_per_label, load_data, get_dataloaders
+from dataloader.data import compute_summary_spectra_per_label, load_data, get_dataloaders
 from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan
 from utils.visualization import plot_meanVSgenerated
 from utils.test_utils import write_metadata_csv
@@ -155,8 +155,9 @@ def main():
 
 
         # Generate and plot spectra with respect to the TRAINING SET
-        mean_std_spectra = compute_mean_spectra_per_label(train_loader, device, logger)
-        mean_spectra_list = [mean_spectra_train[i].squeeze(0) for i in range(len(mean_spectra_train))]
+        summary_mean_spectra = compute_summary_spectra_per_label(train_loader, device, logger)
+        mean_spectra_only = {k: v[0] for k, v in summary_mean_spectra.items()}
+        mean_spectra_list = [mean_spectra_only[i].squeeze(0) for i in range(len(mean_spectra_only))]
         print(f"Mean spectra per label (train set) computed for {len(mean_spectra_list)} labels.")
 
         n_samples = 5

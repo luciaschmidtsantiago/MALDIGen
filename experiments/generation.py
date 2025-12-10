@@ -39,31 +39,36 @@ def generate_samples(model, model_type, device, label_id, num_samples, config):
         ab_t = torch.cumsum(a_t.log(), dim=0).exp()
         ab_t[0] = 1.0
 
-        # --- Create correct one-hot context for that label ---
-        c = torch.zeros(num_samples, config.get('num_classes', 6), device=device)
-        c[:, label_id] = 1.0
-
-        # --- Start from Gaussian noise ---
+        # --- Batch-wise generation ---
+        batch_size = min(500, num_samples)  # Adjust as needed for your GPU
+        all_spectra = []
+        context_dim = config.get('n_cfeat', config.get('n_classes', 6))
         L = model.length
-        x = torch.randn(num_samples, model.in_channels, L, device=device)
 
-        # --- Diffusion sampling ---
-        with torch.no_grad():
-            for t_inv in tqdm(range(timesteps, 0, -1)):
-                t = torch.full((num_samples,), t_inv, device=device, dtype=torch.long)
-                t_norm = (t.float() / float(timesteps)).view(-1, 1)
-                eps = model(x, t_norm, c)
-                ab = ab_t[t].view(num_samples, 1, 1)
-                a = a_t[t].view(num_samples, 1, 1)
-                b = b_t[t].view(num_samples, 1, 1)
-                x = (x - (b / (1 - ab).sqrt()) * eps) / a.sqrt()
-                if t_inv > 1:
-                    x += b.sqrt() * torch.randn_like(x)
+        for start in range(0, num_samples, batch_size):
+            current_batch = min(batch_size, num_samples - start)
+            c = torch.zeros(current_batch, context_dim, device=device)
+            c[:, label_id] = 1.0
+            x = torch.randn(current_batch, model.in_channels, L, device=device)
 
-        # denormalize Diffusion spectra
-        from experiments.main_DM import denormalize_spectra
-        spectra = denormalize_spectra(x).squeeze(1)
-        return spectra
+            with torch.no_grad():
+                for t_inv in tqdm(range(timesteps, 0, -1), leave=False):
+                    t = torch.full((current_batch,), t_inv, device=device, dtype=torch.long)
+                    t_norm = (t.float() / float(timesteps)).view(-1, 1)
+                    eps = model(x, t_norm, c)
+                    ab = ab_t[t].view(current_batch, 1, 1)
+                    a = a_t[t].view(current_batch, 1, 1)
+                    b = b_t[t].view(current_batch, 1, 1)
+                    x = (x - (b / (1 - ab).sqrt()) * eps) / a.sqrt()
+                    if t_inv > 1:
+                        x += b.sqrt() * torch.randn_like(x)
+
+            from experiments.main_DM import denormalize_spectra
+            spectra = denormalize_spectra(x).squeeze(1)
+            all_spectra.append(spectra.detach().cpu())
+            torch.cuda.empty_cache()
+
+        return torch.cat(all_spectra, dim=0)
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -193,19 +198,19 @@ def main():
 
     # --- Define models and output directories ---
     model_paths = {
-        # "cvae_MLP3_32": "results/vae/cvae_MLP3_32",
-        # "cvae_CNN3_8_MxP": "results/vae/cvae_CNN3_8_MxP",
-        # "cgan_MLP3_32_weighted": "results/gan/cgan_MLP3_32_weighted",
-        # "cgan_CNN3_32_weighted": "results/gan/cgan_CNN3_32_weighted",
+        "cvae_MLP3_32": "results/vae/cvae_MLP3_32",
+        "cvae_CNN3_8_MxP": "results/vae/cvae_CNN3_8_MxP",
+        "cgan_MLP3_32_weighted": "results/gan/cgan_MLP3_32_weighted",
+        "cgan_CNN3_32_weighted": "results/gan/cgan_CNN3_32_weighted",
         "dm_S": "results/dm/dm_S",
         "dm_M": "results/dm/dm_M",
         "dm_L": "results/dm/dm_L",
         "dm_XL": "results/dm/dm_XL",
         "dm_deep": "results/dm/dm_deep",
+        "cvae_CNN3_8_MxP_extended": "results/vae/cvae_CNN3_8_MxP_extended",
+        "cgan_CNN3_32_weighted_extended": "results/gan/cgan_CNN3_32_weighted_extended",
+        "dm_deep_extended": "results/dm/dm_deep_CNN3_8_MxP_extended",
     }
-
-    pickle_marisma = "pickles/MARISMa_study.pkl"
-    pickle_driams = "pickles/DRIAMS_study.pkl"
 
     # --- Output base directory ---
     out_base = "results/generated_spectra"
@@ -214,12 +219,23 @@ def main():
     # ============================================================
     # Generate per-model, per-label synthetic spectra
     # ============================================================
-    num_samples = 1000
-
     for model_name, model_dir in model_paths.items():
         print(f"\n🔹 Generating synthetic spectra for model: {model_name}")
         out_dir = os.path.join(out_base, model_name)
         os.makedirs(out_dir, exist_ok=True)
+
+        if 'extended' in model_name:
+            pickle_marisma = "pickles/MARISMa_study_extended.pkl"
+            pickle_driams = "pickles/DRIAMS_study_extended.pkl"
+            num_samples = 5000
+        elif 'enterobacter' in model_name:
+            pickle_marisma = "pickles/MARISMa_study_enterobacter.pkl"
+            pickle_driams = "pickles/DRIAMS_study_enterobacter.pkl"
+            num_samples = 5000
+        else:
+            pickle_marisma = "pickles/MARISMa_study.pkl"
+            pickle_driams = "pickles/DRIAMS_study.pkl"
+            num_samples = 25000
 
         # Find config file (assume naming convention: configs/{model_name}.yaml)
         config_path = f"configs/{model_name}.yaml"
@@ -250,7 +266,6 @@ def main():
             print(f"    → Generating for label {lbl_name} (id={lbl})...")
             spectra = generate_samples(model, model_type, device, lbl, num_samples, config)
             spectra = spectra.detach().cpu().numpy()
-
             out_path = os.path.join(out_dir, f"{lbl}_{lbl_name}.npy")
             np.save(out_path, spectra)
             print(f"      ✅ Saved {num_samples} samples for label {lbl_name} → {out_path}")
