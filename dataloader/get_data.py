@@ -6,25 +6,7 @@ from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 import matplotlib.cm as cm
-
-########## FIXED COLOR MAP FOR 6 LABELS ##########
-# Replace with your actual label names in the correct order:
-LABEL_NAMES = [
-    'Enterobacter_cloacae_complex',
-    'Enterococcus_Faecium',
-    'Escherichia_Coli',
-    'Klebsiella_Pneumoniae',
-    'Pseudomonas_Aeruginosa',
-    'Staphylococcus_Aureus',
-]
-LABEL_TO_COLOR = {lbl: plt.cm.Spectral(i / 5) for i, lbl in enumerate(LABEL_NAMES)}
-
-########## FIXED MARKER MAP FOR DOMAINS ##########
-DOMAIN_TO_MARKER = {
-    'DRIAMS': 'o',      # circle
-    'MARISMa': 'x',     # cross
-    'RKI': 's',         # empty square
-}
+from utils.plotting_utils import LABEL_TO_HEX, DOMAIN_TO_MARKER
 
 class MALDI(Dataset):
     """
@@ -99,12 +81,11 @@ def plot_tsne_flexible(embeddings, meta, color_by='domain',
         idxs = color_values == val
         # Determine marker by domain if possible
         if 'domain' in filtered_meta[0]:
-            # If plotting by label/species, use domain for marker
             marker = DOMAIN_TO_MARKER.get(meta_domains[idxs][0], 'o') if np.any(idxs) else 'o'
         else:
             marker = 'o'
-        if use_fixed and val in LABEL_TO_COLOR:
-            color = LABEL_TO_COLOR[val]
+        if use_fixed and val in LABEL_TO_HEX:
+            color = LABEL_TO_HEX[val]
         else:
             if len(unique_values) <= 10:
                 color = cm.tab10(i / max(1, len(unique_values)-1))
@@ -170,8 +151,8 @@ def plot_tsne_flexible_color_shape(embeddings, meta, color_by='year', shape_by='
     use_fixed = color_by.lower() in ['label', 'species']
     color_map = {}
     for i, color in enumerate(unique_colors):
-        if use_fixed and color in LABEL_TO_COLOR:
-            color_map[color] = LABEL_TO_COLOR[color]
+        if use_fixed and color in LABEL_TO_HEX:
+            color_map[color] = LABEL_TO_HEX[color]
         else:
             if len(unique_colors) <= 10:
                 color_map[color] = cm.tab10(i / max(1, len(unique_colors)-1))
