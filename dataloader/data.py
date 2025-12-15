@@ -306,55 +306,6 @@ def load_data(pickle_marisma, pickle_driams, logger=None, get_labels=False, mode
 
     return train, val, test, ood
 
-def load_data_clostri(pickle_marisma, pickle_driams, logger=None, get_labels=False, model_type=None):
-    """
-    Load MARISMa and DRIAMS pickled datasets, split into
-    train/val/test/OOD, and wrap them in MALDI Dataset objects.
-    """
-    if logger is not None:
-        logger.info("=" * 80)
-        logger.info("DATA CONFIGURATION")
-        logger.info("=" * 80)
-
-    # --- MARISMa ---
-    with open(pickle_marisma, "rb") as f:
-        data_marisma = pickle.load(f)
-    spectra_m, labels_m, metas_m = data_marisma['data'], data_marisma['label'], data_marisma['meta']
-    
-    # --- DRIAMS ---
-    with open(pickle_driams, "rb") as f:
-        data_driams = pickle.load(f)
-    spectra_d, labels_d, metas_d = data_driams['data'], data_driams['label'], data_driams['meta']
-
-    # --- Merge all data and labels ---
-    all_data = np.concatenate([spectra_m, spectra_d])
-    all_labels = np.concatenate([labels_m, labels_d])
-
-    # --- Compute split indices in the merged arrays ---
-    num_train = len(all_data)
-    indices = np.arange(num_train)
-    split = int(0.9 * num_train)
-
-    # MARISMa indices are first, DRIAMS indices are offset by len(spectra_m)
-    split_indices = {
-        'train': list(indices[:split]),
-        'val': list(indices[split:]),
-        'test': list(indices[split:]),
-        'ood': list(indices[split:]),
-    }
-
-    # Create Dataset objects
-    normalization = 'diffusion' if model_type == 'diffusion' else True
-
-    # Return split views (API unchanged)
-    train = MALDI(all_data, all_labels, split_indices, normalization=normalization, get_labels=get_labels, split='train')
-    val   = MALDI(all_data, all_labels, split_indices, normalization=normalization, get_labels=get_labels, split='val')
-    test  = MALDI(all_data, all_labels, split_indices, normalization=normalization, get_labels=get_labels, split='test')
-    ood   = MALDI(all_data, all_labels, split_indices, normalization=normalization, get_labels=get_labels, split='ood')
-
-
-    return train, val, test, ood
-
 def get_dataloaders(train_ds, val_ds, test_ds, ood_ds, batch_size, ood_extra=None):
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader   = DataLoader(val_ds, batch_size=batch_size)
