@@ -25,7 +25,7 @@ from dataloader.data import load_data, get_dataloaders
 from utils.training_utils import run_experiment, setuplogging, get_and_log, evaluation
 from utils.test_utils import reconerrorPIKE, write_pike_csv, compute_val_time_metrics, write_metadata_csv
 from utils.visualization import plot_latent_tsne, plot_reconstructions, plot_tsne_real_vs_synth
-from losses.PIKE import calculate_PIKE
+from losses.PIKE_GPU import calculate_PIKE_gpu
 
 # -----------------------------
 # Argument Parser
@@ -179,7 +179,7 @@ def main():
         plot_latent_tsne(best_model, test.data.to(device), test.labels.to(device), results_path, 'test')
 
         # Plot some reconstructions from val
-        plot_reconstructions(best_model, val, 10, results_path, calculate_PIKE, random_state=None)
+        plot_reconstructions(best_model, val, 10, results_path, calculate_PIKE_gpu, random_state=None)
 
         avg_recon_time, avg_gen_time = compute_val_time_metrics(model, val.data.to(device), config)
         logger.info(f"Average reconstruction time per spectrum: {avg_recon_time:.6f} sec")
