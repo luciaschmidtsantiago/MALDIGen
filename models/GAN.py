@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from utils.conditional_utils import get_condition
 
 ############### GAN ###############
-
 class MLPDecoder1D_Generator(nn.Module):
     def __init__(self, latent_dim, num_layers, output_dim, cond_dim=0, use_bn=False):
         """ Flexible MLP generator (decoder) with optional Batch Normalization.
@@ -143,7 +142,6 @@ class CNNDecoder1D_Generator(nn.Module):
         out = self.final_fc(x)
         return out
 
-# Discriminator: D(x, y)
 class Discriminator(nn.Module):
     def __init__(self, image_dim, cond_dim=0, use_bn=False, use_dropout=True, dropout_prob=0.1):
         super().__init__()
@@ -173,7 +171,6 @@ class Discriminator(nn.Module):
         out = torch.sigmoid(self.fc_out(x))
         return out
     
-################ GAN ###############
 class GAN(nn.Module):
     """
     Simple (unconditional) GAN wrapper class for training and evaluation.
@@ -243,25 +240,42 @@ class ConditionalGAN(nn.Module):
         cond = self.get_cond(y_species, y_amr) if y_species is not None else None
         return self.discriminator(x, cond)
     
-def generate_spectra_per_label_cgan(model, label_correspondence, n_samples, latent_dim, device=None):
+
+def generate_spectra_gan(model, n_samples, latent_dim, device=None, label_correspondence=None):
     """
-    Generate n_samples spectra for each label using a ConditionalGAN.
+    Generate spectra using a GAN model, optionally conditioned on labels.
     Args:
-        model: Trained ConditionalGAN (must be in eval mode).
-        label_correspondence: dict mapping label indices to label names (or vice versa).
-        n_samples: Number of spectra to generate per label.
-        latent_dim: Dimension of the latent noise vector.
-        device: torch.device (optional, will use model's device if None).
+        model (ConditionalGAN or GAN): Trained GAN model.
+        n_samples (int): Number of samples to generate per label (if conditional).
+        latent_dim (int): Dimension of the latent noise vector.
+        device (torch.device, optional): Device to perform generation on.
+        label_correspondence (dict, optional): Mapping from label indices to label names for conditional generation.
     Returns:
-        dict: {label_name: tensor of generated spectra}
+        If label_correspondence is provided:
+            dict: label_name -> generated spectra tensor [n_samples, output_dim]
+        Else:
+            Tensor: generated spectrum tensor [output_dim]
     """
-    # model.eval()
+    model.eval()
     device = device or next(model.parameters()).device
-    results = {}
-    for idx, label_name in label_correspondence.items():
-        y_species = torch.full((n_samples,), idx, dtype=torch.long, device=device)
-        z = torch.randn(n_samples, latent_dim, device=device)
+
+    if label_correspondence:
+        results = {}
+        for idx, label_name in label_correspondence.items():
+            y_species = torch.full((n_samples,), idx, dtype=torch.long, device=device)
+            z = torch.randn(n_samples, latent_dim, device=device)
+            with torch.no_grad():
+                generated = model.forward_G(z, y_species)
+            results[label_name] = generated.detach().cpu()
+        return results
+
+    else:
         with torch.no_grad():
-            generated = model.forward_G(z, y_species)
-        results[label_name] = generated.detach().cpu()
-    return results
+            generated = []
+            for i in range(n_samples):
+                # Sample
+                z = torch.randn(1, latent_dim, device=device)
+                sample = model.forward_G(z).squeeze(0)  # [1, image_dim], already passed through sigmoid in generator
+                generated.append(sample.cpu())
+        generated = torch.stack(generated, dim=0)  # [n_samples, image_dim]
+        return generated

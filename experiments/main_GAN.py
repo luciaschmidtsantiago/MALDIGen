@@ -16,9 +16,9 @@ from pytorch_model_summary import summary
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator, GAN
+from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator, GAN, generate_spectra_gan
 from dataloader.data import compute_summary_spectra_per_label, load_data, get_dataloaders
-from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan
+from utils.training_utils import get_and_log, run_experiment_gan, setuplogging, evaluation_gan
 from visualization.visualization import plot_meanVSgenerated
 from utils.test_utils import write_metadata_csv
 
@@ -29,60 +29,95 @@ def parse_args():
     p.add_argument('--train', action='store_true', default=True, help='Run training (default: only evaluation/visualization)')
     p.add_argument('--evaluation', action='store_true', default=False, help='Run evaluation after training (default: False)')
     p.add_argument('--generation', action='store_true', default=False, help='Generate and plot spectra after training/evaluation (default: False)')
-    p.add_argument('--n_generate', type=int, default=500, help="Number of synthetic spectra to generate per label")
+    p.add_argument('--n_generate', type=int, default=5, help="Number of synthetic spectra to generate per label")
     return p.parse_args()
 
 def main():
+
     args = parse_args()
     config = yaml.safe_load(open(args.config))
-
     metadata = config.get('metadata', {})
 
-    # Logging
     name = args.config.split('/')[-1].split('.')[0]
     mode = 'training' if args.train else 'evaluation'
-    # Ensure results are stored in results/gan/
-    gan_results_dir = os.path.join(config['results_dir'], 'gan')
-    os.makedirs(gan_results_dir, exist_ok=True)
-    results_path = os.path.join(gan_results_dir, name)
+
+    # ============================================================
+    # DIRECTORIES & LOGGING
+    # ============================================================
+    base_results = config.get('results_dir', 'results')
+    results_path = os.path.join(base_results, 'gan', name)
+    plots_path = os.path.join(results_path, 'plots')
+    os.makedirs(results_path, exist_ok=True)
+    os.makedirs(plots_path, exist_ok=True)
     logger = setuplogging(name, mode, results_path)
     logger.info(f"Using config file: {args.config}")
 
-    # Hyperparameters
-    batch_size = config.get('batch_size', 128)
-    pretrained_generator = config.get('pretrained_generator', None)
-    pretrained_discriminator = config.get('pretrained_discriminator', None)
-    latent_dim = config.get('latent_dim', 32)
-    image_dim = config.get('input_dim', 6000)
-    num_epochs = config.get('epochs', 30)
-    num_layers = config.get('n_layers', 3)
-    batch_norm = config.get('batch_norm', False)
-    lr_g = config.get('lr_g', 2e-4)
-    lr_d = config.get('lr_d', 1e-4)
-    max_patience = config.get('max_patience', 10)
-    use_dropout = config.get('use_dropout', True)
-    drop_p = config.get('dropout_prob', 0.1)
+    # ============================================================
+    # DEVICE SETUP
+    # ============================================================
+    logger.info(f"PyTorch version: {torch.__version__}")
+    if torch.cuda.is_available():
+        logger.info("CUDA available")
+        logger.info(f"   - Number of GPUs: {torch.cuda.device_count()}")
+        for i in range(torch.cuda.device_count()):
+            logger.info(f"   - GPU {i}: {torch.cuda.get_device_name(i)}")
+            logger.info(f"     Total memory: {torch.cuda.get_device_properties(i).total_memory / 1024**3:.1f} GB")
+        logger.info(f"   - Current device: {torch.cuda.current_device()}")
+        device = "cuda:0"
+    else:
+        logger.info("CUDA not available")
+        device = "cpu"
+    logger.info(f"Device: {device}")
 
+    # ============================================================
+    # DATA LOADING
+    # ============================================================
+    logger.info("DATA LOADING")
+    pickle_marisma = get_and_log('pickle_marisma', "pickles/MARISMa_study.pkl", config, logger)
+    pickle_driams = get_and_log('pickle_driams', "pickles/DRIAMS_study.pkl", config, logger)
+    batch_size = get_and_log('batch_size', 64, config, logger)
+    image_dim = get_and_log('output_dim', 6000, config, logger)
+    get_labels = get_and_log('get_labels', True, config, logger)
+
+    train, val, test, ood = load_data(pickle_marisma, pickle_driams, get_labels=get_labels)
+    train_loader, val_loader, test_loader, ood_loader = get_dataloaders(train, val, test, ood, batch_size=batch_size)
+
+    # ============================================================
+    # HYPERPARAMETERS
+    # ============================================================
+    logger.info("HYPERPARAMETER SETTING")
+    logger.info("--- Network hyperparameters")
+    num_layers = get_and_log('n_layers', 3, config, logger)
+    batch_norm = get_and_log('batch_norm', False, config, logger)
+    latent_dim = get_and_log('latent_dim', 32, config, logger)
+    logger.info("--- Training hyperparameters")
+    num_epochs = get_and_log('epochs', 30, config, logger)
+    lr_g = get_and_log('lr_g', 2e-4, config, logger)
+    lr_d = get_and_log('lr_d', 1e-4, config, logger)
+    max_patience = get_and_log('max_patience', 10, config, logger)
+    use_dropout = get_and_log('use_dropout', True, config, logger)
+    drop_p = get_and_log('dropout_prob', 0.1, config, logger) if use_dropout else None
+    weighted = get_and_log('weighted', False, config, logger)
+    cond_dim = 0
+
+    # Optional pretrained models for evaluation
+    pretrained_generator = get_and_log('pretrained_generator', None, config, logger)
+    pretrained_discriminator = get_and_log('pretrained_discriminator', None, config, logger)
+    
+    # ============================================================
+    # MODEL SETUP
+    # ============================================================
+    logger.info("=" * 80)
     logger.info(f"TRAINING CONFIGURATION:")
     logger.info("=" * 80)
-    logger.info(f"\nInput dimension: {image_dim}\nLatent dimension: {latent_dim}\nLearning rate (G): {lr_g}\nLearning rate (D): {lr_d}\nMax epochs: {num_epochs}\nMax patience: {max_patience}\nBatch size: {batch_size}\nBatch norm: {batch_norm}\nNumber of layers: {num_layers}")
-
-    # Data
-    train, val, test, ood = load_data(config['pickle_marisma'], config['pickle_driams'], logger, get_labels=True)
-    train_loader, val_loader, test_loader, ood_loader = get_dataloaders(train, val, test, ood, batch_size)
-
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Using device: {device}")
 
     # Initialize models
-    # generator = GenerationNetwork(latent_dim, image_dim, batch_norm).to(device)
     gen_arch = config.get('generator', 'MLP')
     if gen_arch == 'MLP':
-        generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=0, use_bn=batch_norm).to(device)
+        generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=cond_dim, use_bn=batch_norm).to(device)
     elif gen_arch == 'CNN':
-        generator = CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
-    discriminator = Discriminator(image_dim, cond_dim=0, use_bn=batch_norm, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
+        generator = CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, cond_dim=cond_dim, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
+    discriminator = Discriminator(image_dim, cond_dim=cond_dim, use_bn=batch_norm, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
 
     model = GAN(generator, discriminator).to(device)
 
@@ -126,6 +161,9 @@ def main():
             yaml.dump(config, f)
 
     else:
+        logger.info("=" * 80)
+        logger.info(f"LOADING PRETRAINED MODEL:")
+        logger.info("=" * 80)
         # Load the best model from a previous training
         if pretrained_generator is None or pretrained_discriminator is None:
             raise ValueError("Pretrained model paths must be specified in the config for evaluation mode.")
@@ -134,6 +172,9 @@ def main():
         logger.info(f"Loaded pretrained generator from {pretrained_generator}")
         logger.info(f"Loaded pretrained discriminator from {pretrained_discriminator}")
 
+    # ============================================================
+    # EVALUATION
+    # ============================================================
     if args.evaluation:
         logger.info("=" * 80)
         logger.info("EVALUATION")
@@ -146,41 +187,40 @@ def main():
         test_loss, test_d, test_g = evaluation_gan(model, test_loader, criterion, config['latent_dim'], device)
         logger.info(f"Test loss: {test_loss:.4f} (D={test_d:.4f}, G={test_g:.4f})")
 
+    # ============================================================
+    # GENERATION
+    # ============================================================
     if args.generation:
-        model.eval()
-
-        logger.info("=" * 80)
         logger.info("SPECTRA GENERATION")
-        logger.info("=" * 80)
-
 
         # Generate and plot spectra with respect to the TRAINING SET
-        summary_mean_spectra = compute_summary_spectra_per_label(train_loader, device, logger)
+        train_loader_idx = []
+        for x, y in train_loader:
+            if y.ndim > 1:
+                y = y.argmax(dim=1)
+            train_loader_idx.append((x, y))
+        summary_mean_spectra = compute_summary_spectra_per_label(train_loader_idx, device)        
         mean_spectra_only = {k: v[0] for k, v in summary_mean_spectra.items()}
+        
+        
+        
         mean_spectra_list = [mean_spectra_only[i].squeeze(0) for i in range(len(mean_spectra_only))]
         print(f"Mean spectra per label (train set) computed for {len(mean_spectra_list)} labels.")
 
-        n_samples = 5
-        gen_times = []
-        os.makedirs(os.path.join(results_path, 'plots'), exist_ok=True)
+        n_generate = args.n_generate
+        start = time.time()
+        generated_spectra = generate_spectra_gan(model, n_generate, latent_dim, device)
+        end = time.time()
+        total_time = end - start
+        total_samples = sum(v.shape[0] for v in generated_spectra.values()) if isinstance(generated_spectra, dict) else 0
+        per_sample = total_time / total_samples if total_samples > 0 else float('nan')
+        logger.info(f"Total generation time: {total_time:.3f}s — {per_sample:.6f}s per sample ({total_samples} samples)")
+        metadata['avg_reconstruction_time'] = 0
+        metadata['avg_generation_time'] = per_sample
 
-        with torch.no_grad():
-            for i in range(n_samples):
-
-                # Generate a random latent vector
-                start = time.time()
-                z = torch.randn(1, latent_dim, device=device)
-                sample = model.forward_G(z).squeeze(0)  # [1, image_dim], already passed through sigmoid in generator
-                end = time.time()
-                gen_times.append(end - start)
-
-                # Save plot
-                saving_path = os.path.join(results_path, 'plots', f'GAN_generated_spectrum_{i+1}.png')
-                os.makedirs(os.path.dirname(saving_path), exist_ok=True)
-                plot_meanVSgenerated(sample, mean_spectra_list, saving_path)
-        avg_gen_time = sum(gen_times) / n_samples
-        metadata['avg_generation_time'] = avg_gen_time
-        logger.info(f"Average generation time per spectrum: {avg_gen_time:.6f} sec")
+        # Save plot
+        saving_path = os.path.join(plots_path, f'GAN_generated_spectrum_{i+1}.png')
+        plot_meanVSgenerated(generated_spectra[0], mean_spectra_list, saving_path)
 
         # Update metadata and save to config
         config['metadata'] = metadata
