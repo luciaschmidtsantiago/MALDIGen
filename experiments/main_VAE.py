@@ -137,7 +137,6 @@ def main():
         model = VAE_Bernoulli(encoder, decoder, M).to(device)
     logger.info(f"Training {model.__class__.__name__}...")
 
-
     if args.train:
         # Train the model from scratch
         best_model, [nll_train, nll_val], metadata = run_experiment(model, train_loader, val_loader, config, results_path, logger)
