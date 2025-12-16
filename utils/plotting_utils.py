@@ -18,3 +18,15 @@ DOMAIN_TO_MARKER = {
     'MARISMa': 'x',     # cross
     'RKI': 's',         # empty square
 }
+
+printed_names = {
+    'Enterobacter_cloacae_complex': 'E.cloacae complex',
+    'Enterococcus_Faecium': 'E.faecium',
+    'Escherichia_Coli': 'E.coli',
+    'Klebsiella_Pneumoniae': 'K.pneumoniae',
+    'Pseudomonas_Aeruginosa': 'P.aeruginosa',
+    'Staphylococcus_Aureus': 'S.aureus',
+    "Enterobacter_Aerogenes": 'E.aerogenes',
+    "Staphylococcus_Saprophyticus" : 'S.saprophyticus',
+    "Proteus_Vulgaris": 'P.vulgaris',
+}
