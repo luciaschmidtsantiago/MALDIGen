@@ -1,9 +1,7 @@
-import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
-def get_condition(y_species, y_amr=None, y_embed_layer_species=None, y_embed_layer_amr=None, embedding=False, n_classes=6):
+def get_condition(y_species, n_classes, y_amr=None, y_embed_layer_species=None, y_embed_layer_amr=None, embedding=False):
     """
     Get conditioning vector for conditional VAE.
 
@@ -58,65 +56,6 @@ def get_condition(y_species, y_amr=None, y_embed_layer_species=None, y_embed_lay
         else:
             cond = y_species_onehot
 
-    return cond
-
-#### OLD VERSION OF GET CONDITION ####
-def get_condition_old(y, label2, y_embed_layer, label2_dim):
-    """
-    Método común para generar condiciones a partir de etiquetas multilabel y categóricas.
-    Ahora soporta tanto etiquetas binarias (0/1) como probabilidades soft [0,1].
-    
-    Args:
-        y: tensor [batch, num_labels] con etiquetas multilabel 
-           - Valores 0/1: etiquetas binarias (comportamiento original)
-           - Valores [0,1]: probabilidades soft (nuevo comportamiento)
-        label2: tensor [batch] con etiquetas categóricas
-        y_embed_layer: nn.Embedding layer para las etiquetas multilabel
-        label2_dim: número de categorías para label2
-    
-    Returns:
-        cond: tensor [batch, y_embed_dim + label2_dim] con la condición concatenada
-    """
-    # Procesar etiquetas multilabel (con soporte para soft labels)
-    batch_embeds = []
-    
-    # Obtener todos los embeddings de una vez para eficiencia
-    all_label_embeds = y_embed_layer.weight  # [num_labels, embed_dim]
-    
-    for i in range(y.size(0)):
-        y_sample = y[i]  # [num_labels]
-        
-        # Si hay probabilidades soft (valores entre 0 y 1), usar ponderación
-        # Si son binarias (solo 0s y 1s), comportamiento original
-        if torch.any((y_sample > 0) & (y_sample < 1)):
-            # SOFT LABELS: Ponderar embeddings por probabilidades
-            # y_sample[j] * all_label_embeds[j] para cada label j
-            weighted_embeds = y_sample.unsqueeze(1) * all_label_embeds  # [num_labels, embed_dim]
-            
-            # Suma ponderada normalizada por la suma de probabilidades
-            prob_sum = y_sample.sum()
-            if prob_sum > 0:
-                y_emb_sample = weighted_embeds.sum(dim=0) / prob_sum  # [embed_dim]
-            else:
-                y_emb_sample = torch.zeros(y_embed_layer.embedding_dim, device=y.device)
-        else:
-            # HARD LABELS: Comportamiento original (solo 0s y 1s)
-            idxs = (y_sample == 1).nonzero(as_tuple=True)[0]
-            if len(idxs) == 0:
-                y_emb_sample = torch.zeros(y_embed_layer.embedding_dim, device=y.device)
-            else:
-                embeds = y_embed_layer(idxs)
-                y_emb_sample = embeds.mean(dim=0)
-        
-        batch_embeds.append(y_emb_sample)
-    
-    y_emb = torch.stack(batch_embeds, dim=0)
-    
-    # Procesar etiquetas categóricas
-    label2_onehot = F.one_hot(label2, num_classes=label2_dim).float()
-    
-    # Concatenar ambas representaciones
-    cond = torch.cat([y_emb, label2_onehot], dim=1)
     return cond
 
 def impute_missing_labels(x, y, label2, attr_predictor, y_embed, label2_dim, missing_strategy):

@@ -9,33 +9,6 @@ from scipy.signal import savgol_filter
 from dataloader.SpectrumObject import SpectrumObject
 from utils.visualization_old import visualize_preprocessing_steps
 
-def preprocess_spectra(dataset, pipeline, visualize=False):
-    """
-    Applies a preprocessing pipeline to a list of SpectrumObject instances.
-
-    Parameters:
-    - dataset (list of tuples): List of (SpectrumObject, label).
-    - pipeline (SequentialPreprocessor): Preprocessing pipeline.
-    - visualize (bool, optional): If True, visualize a random sample at each preprocessing step.
-
-    Returns:
-    - List of (SpectrumObject, label) after preprocessing.
-    """
-    processed_spectra = []
-
-    # Select a random sample for visualization
-    sample_idx = random.randint(0, len(dataset) - 1) if visualize else None
-
-    for i, (spectrum, label) in enumerate(dataset): 
-        original = spectrum  # Save original spectrum
-        if visualize and i == sample_idx:
-            visualize_preprocessing_steps(original, pipeline)
-
-        processed = pipeline(original)
-        processed_spectra.append((processed, label)) 
-
-    return processed_spectra
-
 class MinMaxScaler:
     """Pre-processing function for scaling the intensity of a spectrum.
 
