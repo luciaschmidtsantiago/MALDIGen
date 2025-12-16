@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from dataloader.data import load_data, get_dataloaders
 from PIKE_GPU import calculate_PIKE_gpu
 from baseline_metric import get_fold, compute_mmd_from_pike, compute_class_distance_stats, compute_neighbour_distance_stats
-from utils.visualization import safe_load_array
+from visualization.visualization import safe_load_array
 
 
 def compute_pike_matrix(X_gen, X_train, t=8, device="cpu", label_id=None, model_name=None):

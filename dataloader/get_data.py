@@ -6,7 +6,7 @@ from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 import matplotlib.cm as cm
-from utils.plotting_utils import LABEL_TO_HEX, DOMAIN_TO_MARKER
+from visualization.plotting_utils import LABEL_TO_HEX, DOMAIN_TO_MARKER
 
 class MALDI(Dataset):
     """

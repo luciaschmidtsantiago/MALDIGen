@@ -28,8 +28,8 @@ from sklearn.manifold import TSNE
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from dataloader.data import load_data
-from utils.plotting_utils import LABEL_TO_HEX, printed_names
-from utils.visualization import safe_load_array
+from visualization.plotting_utils import LABEL_TO_HEX, printed_names
+from visualization.visualization import safe_load_array
 
 def compute_tsne(model_names):
     # Device used when loading PyTorch objects

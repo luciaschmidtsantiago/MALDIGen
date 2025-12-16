@@ -24,7 +24,7 @@ from models.Networks import MLPEncoder1D, MLPDecoder1D, CNNDecoder1D, CNNEncoder
 from dataloader.data import load_data, get_dataloaders
 from utils.training_utils import run_experiment, setuplogging, get_and_log, evaluation
 from utils.test_utils import reconerrorPIKE, write_pike_csv, compute_val_time_metrics, write_metadata_csv
-from utils.visualization import plot_latent_tsne, plot_reconstructions, plot_tsne_real_vs_synth
+from visualization.visualization import plot_latent_tsne, plot_reconstructions, plot_tsne_real_vs_synth
 from losses.PIKE_GPU import calculate_PIKE_gpu
 
 # -----------------------------
@@ -140,7 +140,7 @@ def main():
 
     if args.train:
         # Train the model from scratch
-        best_model, [nll_train, nll_val], metadata = run_experiment(model, train_loader, val_loader, test_loader, config, results_path, logger)
+        best_model, [nll_train, nll_val], metadata = run_experiment(model, train_loader, val_loader, config, results_path, logger)
         logger.info(f"Best {model.__class__.__name__} model obtained from training.")
         pretrained_model = os.path.join(results_path, f"best_model_{name}.pt")
         torch.save(best_model.state_dict(), pretrained_model)

@@ -1,13 +1,10 @@
 import numpy as np
-import random
-
 from scipy import sparse
 from scipy.linalg import norm
 from scipy.stats import binned_statistic
 from scipy.signal import savgol_filter
 
 from dataloader.SpectrumObject import SpectrumObject
-from utils.visualization_old import visualize_preprocessing_steps
 
 class MinMaxScaler:
     """Pre-processing function for scaling the intensity of a spectrum.

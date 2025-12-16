@@ -25,7 +25,7 @@ from models.Networks import MLPEncoder1D, MLPDecoder1D, CNNDecoder1D, CNNEncoder
 from dataloader.data import load_data, get_dataloaders, compute_summary_spectra_per_label
 from utils.training_utils import get_and_log, run_experiment, setuplogging, evaluation
 from utils.test_utils import reconerrorPIKE, write_pike_csv, write_metadata_csv
-from utils.visualization import plot_latent_tsne_conditional, plot_reconstructions_conditional, plot_generated_vs_all_means, plot_generated_spectra_per_label, plot_joint_tsne, plot_tsne_from_saved
+from visualization.visualization import plot_latent_tsne_conditional, plot_reconstructions_conditional, plot_generated_vs_all_means, plot_generated_spectra_per_label, plot_joint_tsne, plot_tsne_from_saved
 from losses.PIKE_GPU import calculate_PIKE_gpu, calculate_pike_matrix
 
 # -----------------------------
@@ -176,7 +176,7 @@ def main():
                 param.requires_grad = False
         logger.info(f"Loaded pretrained model (excluding embeddings) and frozen embeddings from: {pretrained_path}")
         # Fine-tune decoder and new embeddings
-        best_model, [nll_train, nll_val], metadata = run_experiment(model, train_loader, val_loader, test_loader, config, results_path, logger)
+        best_model, [nll_train, nll_val], metadata = run_experiment(model, train_loader, val_loader, config, results_path, logger)
         logger.info(f"Best {model.__class__.__name__} model obtained from fine-tuning.")
         finetuned_model_path = os.path.join(results_path, f"finetuned_model_{name}.pt")
         torch.save(best_model.state_dict(), finetuned_model_path)
@@ -188,7 +188,7 @@ def main():
     else:
         if args.train:
             # Train the model from scratch
-            best_model, [nll_train, nll_val], metadata = run_experiment(model, train_loader, val_loader, test_loader, config, results_path, logger)
+            best_model, [nll_train, nll_val], metadata = run_experiment(model, train_loader, val_loader, config, results_path, logger)
             logger.info(f"Best {model.__class__.__name__} model obtained from training.")
             pretrained_model = os.path.join(results_path, f"best_model_{name}.pt")
             torch.save(best_model.state_dict(), pretrained_model)

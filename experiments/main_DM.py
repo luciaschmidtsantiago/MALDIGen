@@ -13,7 +13,7 @@ from models.DM import ContextUnet1D, generate_spectra_per_label_ddpm
 from utils.training_utils import setuplogging, get_and_log, perturb_input
 from dataloader.data import load_data, get_dataloaders, compute_summary_spectra_per_label
 from losses.PIKE_GPU import calculate_pike_matrix
-from utils.visualization import plot_generated_vs_all_means, save_training_curve, plot_generated_spectra_per_label
+from visualization.visualization import plot_generated_vs_all_means, save_training_curve, plot_generated_spectra_per_label
 from utils.test_utils import write_metadata_csv
 
 def denormalize_spectra(x):

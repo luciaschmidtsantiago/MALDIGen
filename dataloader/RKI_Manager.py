@@ -7,7 +7,7 @@ from collections import defaultdict
 from torch.utils.data import Dataset
 
 from dataloader.SpectrumObject import SpectrumObject
-from utils.visualization_old import visualize_preprocessing
+from visualization.visualization import visualize_preprocessing
 
 class RKIManager:
 

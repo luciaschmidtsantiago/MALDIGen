@@ -19,7 +19,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator, GAN
 from dataloader.data import compute_summary_spectra_per_label, load_data, get_dataloaders
 from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan
-from utils.visualization import plot_meanVSgenerated
+from visualization.visualization import plot_meanVSgenerated
 from utils.test_utils import write_metadata_csv
 
 

@@ -19,7 +19,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from models.GAN import CNNDecoder1D_Generator, Discriminator, MLPDecoder1D_Generator, ConditionalGAN, generate_spectra_per_label_cgan
 from dataloader.data import compute_summary_spectra_per_label, load_data, get_dataloaders
 from utils.training_utils import run_experiment_gan, setuplogging, evaluation_gan, get_and_log
-from utils.visualization import plot_generated_spectra_per_label, plot_generated_vs_all_means
+from visualization.visualization import plot_generated_spectra_per_label, plot_generated_vs_all_means
 from losses.PIKE_GPU import calculate_pike_matrix
 from utils.test_utils import write_metadata_csv
 
