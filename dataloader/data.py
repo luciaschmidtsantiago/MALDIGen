@@ -182,63 +182,6 @@ def compute_and_save_statistics(
         print(f"Saved MALDI dataset statistics to {stats_path}")
     return stats
 
-def load_data_ood(pickle_marisma, pickle_driams, logger=None, get_labels=False, model_type=None):
-    """
-    Load MARISMa and DRIAMS pickled datasets, split into
-    train/val/test/OOD, and wrap them in MALDI Dataset objects.
-    """
-    if logger is not None:
-        logger.info("=" * 80)
-        logger.info("DATA CONFIGURATION")
-        logger.info("=" * 80)
-
-    # --- MARISMa ---
-    with open(pickle_marisma, "rb") as f:
-        data_marisma = pickle.load(f)
-    spectra_m, labels_m, metas_m = data_marisma['data'], data_marisma['label'], data_marisma['meta']
-    years = np.array([int(m['year']) for m in metas_m])
-
-    train_idx = np.where(years <= 2022)[0]
-    val_idx   = np.where(years == 2023)[0]
-    test_idx  = np.where(years == 2024)[0]
-    
-    # --- DRIAMS ---
-    with open(pickle_driams, "rb") as f:
-        data_driams = pickle.load(f)
-    spectra_d, labels_d, metas_d = data_driams['data'], data_driams['label'], data_driams['meta']
-    hospitals = np.array([m['hospital'] for m in metas_d])
-
-    train_idx_d = np.where((hospitals == 'DRIAMS_A') | (hospitals == 'DRIAMS_B'))[0]
-    ood_idx_dc   = np.where((hospitals == 'DRIAMS_C'))[0]
-    ood_idx_dd = np.where((hospitals == 'DRIAMS_D'))[0]
-
-    # --- Merge all data and labels ---
-    all_data = np.concatenate([spectra_m, spectra_d])
-    all_labels = np.concatenate([labels_m, labels_d])
-
-    # --- Compute split indices in the merged arrays ---
-    # MARISMa indices are first, DRIAMS indices are offset by len(spectra_m)
-    offset = len(spectra_m)
-    split_indices = {
-        'train': list(train_idx) + [i + offset for i in train_idx_d],
-        'val': list(val_idx),
-        'test': list(test_idx),
-        'ood_c': [i + offset for i in ood_idx_dc],
-        'ood_d': [i + offset for i in ood_idx_dd]
-    }
-    
-    # Create Dataset objects
-    normalization = 'diffusion' if model_type == 'diffusion' else True
-
-    # Return split views (API unchanged)
-    train = MALDI(all_data, all_labels, split_indices, normalization=normalization, get_labels=get_labels, split='train')
-    val   = MALDI(all_data, all_labels, split_indices, normalization=normalization, get_labels=get_labels, split='val')
-    test  = MALDI(all_data, all_labels, split_indices, normalization=normalization, get_labels=get_labels, split='test')
-    ood_c = MALDI(all_data, all_labels, split_indices, normalization=normalization, get_labels=get_labels, split='ood_c')
-    ood_d = MALDI(all_data, all_labels, split_indices, normalization=normalization, get_labels=get_labels, split='ood_d')
-
-    return train, val, test, ood_c, ood_d
-
 def load_data(pickle_marisma, pickle_driams, logger=None, get_labels=False, model_type=None):
     """
     Load MARISMa and DRIAMS pickled datasets, split into
