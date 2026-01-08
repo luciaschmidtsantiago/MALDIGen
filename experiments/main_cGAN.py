@@ -91,7 +91,6 @@ def main():
     logger.info("HYPERPARAMETER SETTING")
     logger.info("--- Network hyperparameters")
     num_layers = get_and_log('n_layers', 3, config, logger)
-    batch_norm = get_and_log('batch_norm', False, config, logger)
     latent_dim = get_and_log('latent_dim', 32, config, logger)
     logger.info("--- Training hyperparameters")
     num_epochs = get_and_log('epochs', 30, config, logger)
@@ -123,10 +122,10 @@ def main():
     # Initialize models
     gen_arch = config.get('generator', 'MLP')
     if gen_arch == 'MLP':
-        generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
+        generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device)
     elif gen_arch == 'CNN':
-        generator = CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
-    discriminator = Discriminator(image_dim, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
+        generator = CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device)
+    discriminator = Discriminator(image_dim, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device)
 
     model = ConditionalGAN(generator=generator,
                         discriminator=discriminator,
