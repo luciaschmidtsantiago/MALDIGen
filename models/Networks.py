@@ -2,11 +2,10 @@ import torch
 import torch.nn as nn
 
 class MLPEncoder1D(nn.Module):
-    def __init__(self, input_dim, num_layers, latent_dim, cond_dim= 0, use_bn=False, dropout=False, dropout_prob=0.1):
+    def __init__(self, input_dim, num_layers, latent_dim, cond_dim= 0, dropout=False, dropout_prob=0.1):
         super().__init__()
         self.cond_dim = cond_dim
         self.in_dim = input_dim + cond_dim
-        self.use_bn = use_bn
         self.dropout = dropout
         self.dropout_prob = dropout_prob
 
@@ -18,11 +17,8 @@ class MLPEncoder1D(nn.Module):
 
         for out_dim in hidden_dims:
             layers.append(nn.Linear(self.in_dim, out_dim))
-            if self.use_bn:
-                layers.append(nn.BatchNorm1d(out_dim))
-            if self.dropout:
-                layers.append(nn.Dropout(self.dropout_prob))
             layers.append(nn.LeakyReLU())
+            layers.append(nn.Dropout(self.dropout_prob) if self.dropout else nn.Identity())
             self.in_dim = out_dim
 
         # Final projection to [μ, logσ²]
@@ -36,12 +32,11 @@ class MLPEncoder1D(nn.Module):
         return h
 
 class MLPDecoder1D(nn.Module):
-    def __init__(self, latent_dim, num_layers, output_dim, cond_dim=0, use_bn=False, dropout=False, dropout_prob=0.1):
+    def __init__(self, latent_dim, num_layers, output_dim, cond_dim=0, dropout=False, dropout_prob=0.1):
         super().__init__()
         self.cond_dim = cond_dim
         self.latent_dim = latent_dim
         self.in_dim = latent_dim + cond_dim
-        self.use_bn = use_bn
         self.dropout = dropout
         self.dropout_prob = dropout_prob
 
@@ -49,11 +44,8 @@ class MLPDecoder1D(nn.Module):
         for i in range(num_layers):
             out_dim = 2 ** (i + 2) * latent_dim  # e.g., 4×, 8×, 16×...
             layers.append(nn.Linear(self.in_dim, out_dim))
-            if self.use_bn:
-                layers.append(nn.BatchNorm1d(out_dim))
-            if self.dropout:
-                layers.append(nn.Dropout(self.dropout_prob))
             layers.append(nn.LeakyReLU())
+            layers.append(nn.Dropout(self.dropout_prob) if self.dropout else nn.Identity())
             self.in_dim = out_dim
 
         layers.append(nn.Linear(self.in_dim, output_dim))
@@ -69,14 +61,13 @@ class CNNEncoder1D(nn.Module):
     """
     CNN encoder that conditions on a label embedding after convolutional layers when cond_dim > 0.
     """
-    def __init__(self, latent_dim, img_shape, num_layers=3, base_channels=32, max_pool=False,  cond_dim=0, use_bn=False, dropout=False, dropout_prob=0.1):
+    def __init__(self, latent_dim, img_shape, num_layers=3, base_channels=32, max_pool=False, cond_dim=0, dropout=False, dropout_prob=0.1):
         super().__init__()
         self.img_shape = img_shape
         self.num_layers = num_layers
         self.base_channels = base_channels
         self.max_pool = max_pool
         self.cond_dim = cond_dim
-        self.use_bn = use_bn
         self.dropout = dropout
         self.dropout_prob = dropout_prob
 
@@ -92,11 +83,8 @@ class CNNEncoder1D(nn.Module):
 
         for i in range(num_layers):
             conv_layers.append(nn.Conv1d(in_channels, out_channels, self.kernel_size, stride=self.stride, padding=self.padding))
-            if self.use_bn:
-                conv_layers.append(nn.BatchNorm1d(out_channels))
-            if self.dropout:
-                conv_layers.append(nn.Dropout(self.dropout_prob))
             conv_layers.append(nn.LeakyReLU())
+            conv_layers.append(nn.Dropout(self.dropout_prob) if self.dropout else nn.Identity())
             in_channels = out_channels
             out_channels *= 2
 
@@ -138,14 +126,13 @@ class CNNDecoder1D(nn.Module):
     """
     CNN decoder that conditions on label embedding concatenated to the latent vector when cond_dim > 0.
     """
-    def __init__(self, latent_dim, img_shape, num_layers=3, base_channels=32, max_pool=False, cond_dim=0, use_bn=False, dropout=False, dropout_prob=0.1):
+    def __init__(self, latent_dim, img_shape, num_layers=3, base_channels=32, max_pool=False, cond_dim=0, dropout=False, dropout_prob=0.1):
         super().__init__()
         self.img_shape = img_shape
         self.num_layers = num_layers
         self.base_channels = base_channels
         self.max_pool = max_pool
         self.cond_dim = cond_dim
-        self.use_bn = use_bn
         self.dropout = dropout
         self.dropout_prob = dropout_prob
 
@@ -172,8 +159,6 @@ class CNNDecoder1D(nn.Module):
 
         for out_dim in fc_hidden:
             fc_layers.append(nn.Linear(in_dim, out_dim))
-            if self.use_bn:
-                fc_layers.append(nn.BatchNorm1d(out_dim))
             if self.dropout:
                 fc_layers.append(nn.Dropout(self.dropout_prob))
             fc_layers.append(nn.LeakyReLU())
@@ -192,8 +177,6 @@ class CNNDecoder1D(nn.Module):
         for i in range(num_upsamples - 1):
             deconv_layers.append(nn.Upsample(scale_factor=2, mode='nearest'))
             deconv_layers.append(nn.Conv1d(in_channels, out_channels, self.kernel_size, stride=self.stride, padding=self.padding))
-            if self.use_bn:
-                deconv_layers.append(nn.BatchNorm1d(out_channels))
             if self.dropout:
                 deconv_layers.append(nn.Dropout(self.dropout_prob))
             deconv_layers.append(nn.LeakyReLU())

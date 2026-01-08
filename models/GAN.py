@@ -12,7 +12,8 @@ class MLPDecoder1D_Generator(nn.Module):
             num_layers (int): Number of hidden layers.
             output_dim (int): Dimension of the output spectrum.
             cond_dim (int): Dimension of conditional vector (0 for unconditional).
-            use_bn (bool): Whether to include BatchNorm1d layers.
+            dropout (bool): Whether to use Dropout layers.
+            dropout_prob (float): Dropout probability.
         """
         super().__init__()
         self.cond_dim = cond_dim
@@ -27,9 +28,8 @@ class MLPDecoder1D_Generator(nn.Module):
         for i in range(num_layers):
             out_dim = 2 ** (i + 2) * latent_dim  # 4×, 8×, 16×...
             layers.append(nn.Linear(in_dim, out_dim))
-            if self.dropout:
-                layers.append(nn.Dropout(self.dropout_prob))
             layers.append(nn.LeakyReLU(0.2))
+            layers.append(nn.Dropout(self.dropout_prob) if self.dropout else nn.Identity())
             in_dim = out_dim
 
         # Output layer: maps to final spectrum dimension
@@ -50,32 +50,29 @@ class MLPDecoder1D_Generator(nn.Module):
         return self.net(z)
 
 class CNNDecoder1D_Generator(nn.Module):
-    """
-    Simple 1D CNN Generator for spectra synthesis.
-    Architecture:
-      1. Linear layer expands latent vector to feature map.
-      2. Three upsampling + Conv1d blocks increase length and reduce channels.
-      3. Conditional vector (if provided) is concatenated after convolutions.
-      4. Final MLP head projects to output spectrum.
-    """
-    def __init__(
-        self,
-        latent_dim,
-        output_dim,
-        n_layers=3,
-        cond_dim=0,
-        base_channels=32,
-        max_pool=False,
-        dropout=True,
-        dropout_prob=0.1,
-    ):
+    def __init__(self, latent_dim, output_dim, n_layers=3, cond_dim=0, base_channels=32, dropout=True, dropout_prob=0.1,):
+        """
+        Simple 1D CNN Generator for spectra synthesis.
+            Architecture:
+            1. Linear layer expands latent vector to feature map.
+            2. Three upsampling + Conv1d blocks increase length and reduce channels.
+            3. Conditional vector (if provided) is concatenated after convolutions.
+            4. Final MLP head projects to output spectrum.
+        Args:
+            latent_dim (int): Dimension of the latent noise vector.
+            output_dim (int): Dimension of the output spectrum.
+            n_layers (int): Number of upsampling convolutional layers.
+            cond_dim (int): Dimension of conditional vector (0 for unconditional).
+            base_channels (int): Number of channels in the first conv layer.
+            dropout (bool): Whether to use Dropout layers.
+            dropout_prob (float): Dropout probability.
+        """
         super().__init__()
         self.latent_dim = latent_dim
         self.output_dim = output_dim
         self.cond_dim = cond_dim
         self.n_layers = n_layers
         self.base_channels = base_channels
-        self.max_pool = max_pool
         self.dropout = dropout
         self.dropout_prob = dropout_prob
         
@@ -150,6 +147,14 @@ class CNNDecoder1D_Generator(nn.Module):
 
 class Discriminator(nn.Module):
     def __init__(self, image_dim, cond_dim=0, dropout=True, dropout_prob=0.1):
+        """
+        Simple MLP Discriminator for spectra.
+        Args:
+            image_dim (int): Dimension of the input spectrum.
+            cond_dim (int): Dimension of conditional vector (0 for unconditional).
+            dropout (bool): Whether to use Dropout layers.
+            dropout_prob (float): Dropout probability.
+        """
         super().__init__()
         input_dim = image_dim + cond_dim
         self.fc1 = nn.Linear(input_dim, 1024)

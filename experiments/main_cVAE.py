@@ -104,7 +104,6 @@ def main():
     logger.info("n_heads are only used for attention-based models")
     num_heads = get_and_log('n_heads', 2, config, logger)
     max_pool = get_and_log('max_pool', False, config, logger)
-    batch_norm = get_and_log('batch_norm', False, config, logger)
     dropout = get_and_log('dropout', True, config, logger)
     drop_p = get_and_log('dropout_prob', 0.1, config, logger) if dropout else None
     encoder = get_and_log('encoder', 'MLPEncoder1D', config, logger)
@@ -130,17 +129,17 @@ def main():
     # ============================================================
     logger.info("MODEL SETUP")
     if encoder == 'MLPEncoder1D':
-        encoder = MLPEncoder1D(D, num_layers, M, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
+        encoder = MLPEncoder1D(D, num_layers, M, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device)
         encoder_input = torch.zeros(1, D + cond_dim).to(device) if cond_dim > 0 else torch.zeros(1, D).to(device)
         logger.info("\nENCODER:\n" + str(summary(encoder, encoder_input, show_input=False, show_hierarchical=False)))
     elif encoder == 'CNNEncoder1D':
-        encoder = CNNEncoder1D(M, (1, D), num_layers=num_layers, max_pool=max_pool, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
+        encoder = CNNEncoder1D(M, (1, D), num_layers=num_layers, max_pool=max_pool, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device)
     if decoder == 'MLPDecoder1D':
-        decoder = MLPDecoder1D(M, num_layers, D, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
+        decoder = MLPDecoder1D(M, num_layers, D, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device)
         decoder_input = torch.zeros(1, M + cond_dim).to(device) if cond_dim > 0 else torch.zeros(1, M).to(device)
         logger.info("\nDECODER:\n" + str(summary(decoder, decoder_input, show_input=False, show_hierarchical=False)))
     elif decoder == 'CNNDecoder1D':
-        decoder = CNNDecoder1D(M, (1, D), num_layers=num_layers, max_pool=max_pool, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
+        decoder = CNNDecoder1D(M, (1, D), num_layers=num_layers, max_pool=max_pool, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device)
     if model == 'cVAE':
         model = ConditionalVAE(encoder, decoder, y_species_dim, y_embed_dim, y_amr_dim, M, embedding).to(device)
     logger.info(f"MODEL: {model.__class__.__name__}")

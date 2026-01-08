@@ -5,6 +5,8 @@ from tqdm import tqdm
 import yaml
 import sys
 
+from utils.training_utils import get_and_log
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from dataloader.data import load_data
 
@@ -124,7 +126,8 @@ def load_trained_model(model_name, model_path, config_path, device):
     elif "gan" in model_name.lower():
         image_dim = config.get('output_dim', 6000)
         num_layers = config.get('n_layers', 3)
-        batch_norm = config.get('batch_norm', False)
+        dropout = config.get('dropout', True)
+        drop_p = config.get('dropout_prob', 0.1) if dropout else None
         latent_dim = config.get('latent_dim', 32)
         dropout = config.get('dropout', True)
         drop_p = config.get('dropout_prob', 0.1) if dropout else None
@@ -136,8 +139,8 @@ def load_trained_model(model_name, model_path, config_path, device):
 
         from models.GAN import MLPDecoder1D_Generator, CNNDecoder1D_Generator, Discriminator, ConditionalGAN
         gen_arch = config.get('generator', 'MLP')
-        generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=cond_dim, use_bn=batch_norm).to(device) if gen_arch == 'MLP' else CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device)
-        discriminator = Discriminator(image_dim, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
+        generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device) if gen_arch == 'MLP' else CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device)
+        discriminator = Discriminator(image_dim, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device)
         model = ConditionalGAN(generator, discriminator, y_species_dim, y_embed_dim, y_amr_dim, embedding).to(device)
 
         # Use config['pretrained_generator'] and config['pretrained_discriminator'] if available
