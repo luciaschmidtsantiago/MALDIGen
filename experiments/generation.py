@@ -126,8 +126,8 @@ def load_trained_model(model_name, model_path, config_path, device):
         num_layers = config.get('n_layers', 3)
         batch_norm = config.get('batch_norm', False)
         latent_dim = config.get('latent_dim', 32)
-        use_dropout = config.get('use_dropout', True)
-        drop_p = config.get('dropout_prob', 0.1) if use_dropout else None
+        dropout = config.get('dropout', True)
+        drop_p = config.get('dropout_prob', 0.1) if dropout else None
         y_species_dim = config.get('y_species_dim', 0)
         y_embed_dim = config.get('y_embed_dim', 0)
         y_amr_dim = config.get('y_amr_dim', 0)
@@ -136,8 +136,8 @@ def load_trained_model(model_name, model_path, config_path, device):
 
         from models.GAN import MLPDecoder1D_Generator, CNNDecoder1D_Generator, Discriminator, ConditionalGAN
         gen_arch = config.get('generator', 'MLP')
-        generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=cond_dim, use_bn=batch_norm).to(device) if gen_arch == 'MLP' else CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, cond_dim=cond_dim, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
-        discriminator = Discriminator(image_dim, cond_dim=cond_dim, use_bn=batch_norm, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
+        generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=cond_dim, use_bn=batch_norm).to(device) if gen_arch == 'MLP' else CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device)
+        discriminator = Discriminator(image_dim, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
         model = ConditionalGAN(generator, discriminator, y_species_dim, y_embed_dim, y_amr_dim, embedding).to(device)
 
         # Use config['pretrained_generator'] and config['pretrained_discriminator'] if available

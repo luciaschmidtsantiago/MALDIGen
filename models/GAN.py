@@ -6,7 +6,7 @@ from utils.conditional_utils import get_condition
 
 ############### GAN ###############
 class MLPDecoder1D_Generator(nn.Module):
-    def __init__(self, latent_dim, num_layers, output_dim, cond_dim=0, use_bn=False):
+    def __init__(self, latent_dim, num_layers, output_dim, cond_dim=0, use_bn=False, dropout=False, dropout_prob=0.1):
         """ Flexible MLP generator (decoder) with optional Batch Normalization.
         Args:
             latent_dim (int): Dimension of the latent noise vector.
@@ -20,6 +20,8 @@ class MLPDecoder1D_Generator(nn.Module):
         self.latent_dim = latent_dim
         self.in_dim = latent_dim + cond_dim
         self.use_bn = use_bn
+        self.dropout = dropout
+        self.dropout_prob = dropout_prob
 
         layers = []
         in_dim = self.in_dim
@@ -29,6 +31,8 @@ class MLPDecoder1D_Generator(nn.Module):
             layers.append(nn.Linear(in_dim, out_dim))
             if self.use_bn:
                 layers.append(nn.BatchNorm1d(out_dim))
+            if self.dropout:
+                layers.append(nn.Dropout(self.dropout_prob))
             layers.append(nn.LeakyReLU(0.2))
             in_dim = out_dim
 
@@ -64,8 +68,9 @@ class CNNDecoder1D_Generator(nn.Module):
         output_dim,
         n_layers=3,
         cond_dim=0,
-        base_channels=128,
-        use_dropout=True,
+        base_channels=32,
+        use_bn=False,
+        dropout=True,
         dropout_prob=0.1,
     ):
         super().__init__()
@@ -74,8 +79,13 @@ class CNNDecoder1D_Generator(nn.Module):
         self.cond_dim = cond_dim
         self.n_layers = n_layers
         self.base_channels = base_channels
-        self.use_dropout = use_dropout
+        self.use_bn = use_bn
+        self.dropout = dropout
         self.dropout_prob = dropout_prob
+        
+        self.kernel_size = 4
+        self.stride = 2
+        self.padding = 1
 
         # Compute initial feature map size
         init_length = 16  # You may want to make this dynamic
@@ -93,9 +103,10 @@ class CNNDecoder1D_Generator(nn.Module):
         for i in range(n_layers):
             block = nn.Sequential(
                 nn.Upsample(scale_factor=2, mode="nearest"),
-                nn.Conv1d(in_channels[i], out_channels[i], kernel_size=5, padding=2),
+                nn.Conv1d(in_channels[i], out_channels[i], kernel_size=self.kernel_size, stride=self.stride, padding=self.padding),
+                nn.BatchNorm1d(out_channels[i]) if self.use_bn else nn.Identity(),
                 nn.LeakyReLU(0.2, inplace=True),
-                nn.Dropout(dropout_prob) if use_dropout else nn.Identity()
+                nn.Dropout(self.dropout_prob) if self.dropout else nn.Identity()
             )
             self.upsample_blocks.append(block)
 
@@ -143,7 +154,7 @@ class CNNDecoder1D_Generator(nn.Module):
         return out
 
 class Discriminator(nn.Module):
-    def __init__(self, image_dim, cond_dim=0, use_bn=False, use_dropout=True, dropout_prob=0.1):
+    def __init__(self, image_dim, cond_dim=0, use_bn=False, dropout=True, dropout_prob=0.1):
         super().__init__()
         input_dim = image_dim + cond_dim
         self.fc1 = nn.Linear(input_dim, 1024)
@@ -154,7 +165,7 @@ class Discriminator(nn.Module):
             self.bn1, self.bn2, self.bn3 = nn.BatchNorm1d(1024), nn.BatchNorm1d(512), nn.BatchNorm1d(256)
         else:
             self.bn1 = self.bn2 = self.bn3 = None
-        if use_dropout:
+        if dropout:
             self.dp1, self.dp2, self.dp3 = nn.Dropout(dropout_prob), nn.Dropout(dropout_prob), nn.Dropout(dropout_prob)
         else:
             self.dp1 = self.dp2 = self.dp3 = None
@@ -165,7 +176,7 @@ class Discriminator(nn.Module):
         for fc, bn, dp in zip([self.fc1, self.fc2, self.fc3], [self.bn1, self.bn2, self.bn3], [self.dp1, self.dp2, self.dp3]):
             x = fc(x)
             if bn: x = bn(x)
-            x = F.leaky_relu(x, 0.2)
+            x = nn.LeakyReLU(0.2, inplace=True)
             if dp: x = dp(x)
         # Pass through Sigmoid
         out = torch.sigmoid(self.fc_out(x))

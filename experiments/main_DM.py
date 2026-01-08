@@ -30,7 +30,7 @@ def denormalize_spectra(x):
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--config', default='configs/dm_deep_extended.yaml', type=str)
+    p.add_argument('--config', default='example_ddpm.yaml', type=str)
     p.add_argument('--train', action='store_true', default=False, help='Run training')
     p.add_argument('--evaluation', action='store_true', default=False, help='Run evaluation')
     p.add_argument('--generation', action='store_true', default=False, help='Run generation after training/eval')
@@ -116,7 +116,7 @@ def main():
     kernel_size = get_and_log('kernel_size', 4, config, logger)
 
     logger.info("--- Training hyperparameters")
-    n_epoch = get_and_log('n_epoch', 32, config, logger)
+    epochs = get_and_log('epochs', 32, config, logger)
     lrate = get_and_log('lrate', 1e-3, config, logger)
 
     # Diffusion schedule
@@ -177,10 +177,10 @@ def main():
         best_model_path = os.path.join(results_path, "context_model_best.pth")
         train_loss_list = []
         val_loss_list = []
-        for ep in range(n_epoch):
-            optim.param_groups[0]['lr'] = lrate * (1 - ep / n_epoch)
+        for ep in range(epochs):
+            optim.param_groups[0]['lr'] = lrate * (1 - ep / epochs)
             epoch_losses = []
-            pbar = tqdm(train_loader, desc=f"Epoch {ep+1}/{n_epoch}")
+            pbar = tqdm(train_loader, desc=f"Epoch {ep+1}/{epochs}")
 
             for x, c in pbar:
                 optim.zero_grad()
@@ -208,7 +208,7 @@ def main():
 
             train_loss = np.mean(epoch_losses)
             train_loss_list.append(train_loss)
-            logger.info(f"Epoch {ep+1}/{n_epoch} — Train MSE: {train_loss:.6f}")
+            logger.info(f"Epoch {ep+1}/{epochs} — Train MSE: {train_loss:.6f}")
 
             # Validation loss (use val_loader)
             nn_model.eval()
@@ -228,7 +228,7 @@ def main():
                     val_losses.append(val_loss)
             val_loss_mean = np.mean(val_losses)
             val_loss_list.append(val_loss_mean)
-            logger.info(f"Epoch {ep+1}/{n_epoch} — Val MSE: {val_loss_mean:.6f}")
+            logger.info(f"Epoch {ep+1}/{epochs} — Val MSE: {val_loss_mean:.6f}")
             nn_model.train()
 
             # Early stopping logic

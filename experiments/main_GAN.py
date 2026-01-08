@@ -95,8 +95,8 @@ def main():
     lr_g = get_and_log('lr_g', 2e-4, config, logger)
     lr_d = get_and_log('lr_d', 1e-4, config, logger)
     max_patience = get_and_log('max_patience', 10, config, logger)
-    use_dropout = get_and_log('use_dropout', True, config, logger)
-    drop_p = get_and_log('dropout_prob', 0.1, config, logger) if use_dropout else None
+    dropout = get_and_log('dropout', True, config, logger)
+    drop_p = get_and_log('dropout_prob', 0.1, config, logger) if dropout else None
     weighted = get_and_log('weighted', False, config, logger)
     cond_dim = 0
 
@@ -116,8 +116,8 @@ def main():
     if gen_arch == 'MLP':
         generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=cond_dim, use_bn=batch_norm).to(device)
     elif gen_arch == 'CNN':
-        generator = CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, cond_dim=cond_dim, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
-    discriminator = Discriminator(image_dim, cond_dim=cond_dim, use_bn=batch_norm, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
+        generator = CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, cond_dim=cond_dim, dropout=dropout, dropout_prob=drop_p).to(device)
+    discriminator = Discriminator(image_dim, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
 
     model = GAN(generator, discriminator).to(device)
 

@@ -49,6 +49,8 @@ class ContextUnet1D(nn.Module):
         n_blocks: int = 2,
         norm_groups: int = 8,
         kernel_size: int = 4,
+        stride: int = 2,
+        padding: int = 1,
         logger=None
     ):
         super().__init__()
@@ -61,7 +63,7 @@ class ContextUnet1D(nn.Module):
 
         # --- Initial 1D conv ---
         self.init_conv = nn.Sequential(
-            nn.Conv1d(in_channels, n_feat, kernel_size=3, padding=1),
+            nn.Conv1d(in_channels, n_feat, kernel_size=kernel_size, stride=stride, padding=padding),
             nn.GroupNorm(norm_groups, n_feat),
             nn.ReLU()
         )
@@ -73,7 +75,7 @@ class ContextUnet1D(nn.Module):
         for i in range(n_blocks):
             out_ch = in_ch if i < n_blocks - 1 else 2 * in_ch  # last down doubles channels
             self.down_blocks.append(nn.Sequential(
-                nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, stride=2, padding=1),
+                nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, stride=stride, padding=padding),
                 nn.GroupNorm(norm_groups, out_ch),
                 nn.ReLU()
             ))
@@ -112,7 +114,7 @@ class ContextUnet1D(nn.Module):
             skip_ch = down_channels[-(i + 1)]
             out_ch = n_feat if i < n_blocks - 1 else n_feat  # constant decoder width
             self.up_blocks.append(nn.Sequential(
-                nn.ConvTranspose1d(in_ch + skip_ch, out_ch, kernel_size=4, stride=2, padding=1),
+                nn.ConvTranspose1d(in_ch + skip_ch, out_ch, kernel_size=kernel_size, stride=stride, padding=padding),
                 nn.GroupNorm(norm_groups, out_ch),
                 nn.ReLU()
             ))
@@ -120,10 +122,10 @@ class ContextUnet1D(nn.Module):
 
         # --- Output layer ---
         self.out = nn.Sequential(
-            nn.Conv1d(2 * n_feat, n_feat, kernel_size=3, padding=1),
+            nn.Conv1d(2 * n_feat, n_feat, kernel_size=kernel_size, stride=stride, padding=padding),
             nn.GroupNorm(norm_groups, n_feat),
             nn.ReLU(),
-            nn.Conv1d(n_feat, in_channels, kernel_size=3, padding=1)
+            nn.Conv1d(n_feat, in_channels, kernel_size=kernel_size, stride=stride, padding=padding)
         )
 
     def forward(self, x, t, c=None):

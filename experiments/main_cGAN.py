@@ -26,13 +26,16 @@ from utils.test_utils import write_metadata_csv
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--config', default='configs/cgan_CNN3_32_weighted_extended.yaml', type=str)
+    p.add_argument('--config', default='example_cgan.yaml', type=str)
     p.add_argument('--train', action='store_true', default=False, help='Run training')
     p.add_argument('--evaluation', action='store_true', default=False, help='Run evaluation (default: train and eval only)')
     p.add_argument('--generation', action='store_true', default=False, help='Run evaluation (default: train and eval only)')
     p.add_argument('--n_generate', type=int, default=500, help="Number of synthetic spectra to generate per label")
     return p.parse_args()
 
+# -----------------------------
+# Main Generation Pipeline
+# -----------------------------
 def main():
     args = parse_args()
     config = yaml.safe_load(open(args.config))
@@ -95,8 +98,8 @@ def main():
     lr_g = get_and_log('lr_g', 2e-4, config, logger)
     lr_d = get_and_log('lr_d', 1e-4, config, logger)
     max_patience = get_and_log('max_patience', 10, config, logger)
-    use_dropout = get_and_log('use_dropout', True, config, logger)
-    drop_p = get_and_log('dropout_prob', 0.1, config, logger) if use_dropout else None
+    dropout = get_and_log('dropout', True, config, logger)
+    drop_p = get_and_log('dropout_prob', 0.1, config, logger) if dropout else None
     weighted = get_and_log('weighted', False, config, logger)
     logger.info("--- Conditional GAN hyperparameters")
     y_species_dim = get_and_log('y_species_dim', 0, config, logger)
@@ -120,10 +123,10 @@ def main():
     # Initialize models
     gen_arch = config.get('generator', 'MLP')
     if gen_arch == 'MLP':
-        generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=cond_dim, use_bn=batch_norm).to(device)
+        generator = MLPDecoder1D_Generator(latent_dim, num_layers, image_dim, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
     elif gen_arch == 'CNN':
-        generator = CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, cond_dim=cond_dim, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
-    discriminator = Discriminator(image_dim, cond_dim=cond_dim, use_bn=batch_norm, use_dropout=use_dropout, dropout_prob=drop_p).to(device)
+        generator = CNNDecoder1D_Generator(latent_dim, image_dim, n_layers=num_layers, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
+    discriminator = Discriminator(image_dim, cond_dim=cond_dim, use_bn=batch_norm, dropout=dropout, dropout_prob=drop_p).to(device)
 
     model = ConditionalGAN(generator=generator,
                         discriminator=discriminator,
