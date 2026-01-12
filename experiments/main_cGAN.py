@@ -26,8 +26,8 @@ from utils.test_utils import write_metadata_csv
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--config', default='example_cgan.yaml', type=str)
-    p.add_argument('--train', action='store_true', default=False, help='Run training')
+    p.add_argument('--config', default='experiments/example_cgan.yaml', type=str)
+    p.add_argument('--train', action='store_true', default=True, help='Run training')
     p.add_argument('--evaluation', action='store_true', default=False, help='Run evaluation (default: train and eval only)')
     p.add_argument('--generation', action='store_true', default=False, help='Run evaluation (default: train and eval only)')
     p.add_argument('--n_generate', type=int, default=500, help="Number of synthetic spectra to generate per label")
