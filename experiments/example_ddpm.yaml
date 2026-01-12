@@ -2,17 +2,26 @@ base_features: 64
 batch_size: 64
 beta1: 0.0001
 beta2: 0.02
+epochs: 200
 kernel_size: 4
 lrate: 0.001
 max_patience: 30
+metadata:
+  epochs: 182
+  time_per_epoch_sec: 28.390400604887322
+  total_params: 12563777
+  training_time_sec: 5167.052910089493
 n_channels: 1
 n_classes: 6
-epochs: 200
 norm_groups: 8
 num_blocks: 3
 output_dim: 6000
 pickle_driams: pickles/DRIAMS_study.pkl
 pickle_marisma: pickles/MARISMa_study.pkl
-pretrained_model_path: results/dm/dm_deep/context_model_best.pth
+pretrained_model_path: results/dm/example_ddpm/context_model_best.pth
 results_dir: results
 timesteps: 500
+epochs: 182
+time_per_epoch_sec: 28.390400604887322
+total_params: 12563777
+training_time_sec: 5167.052910089493
