@@ -33,8 +33,8 @@ from losses.PIKE_GPU import calculate_PIKE_gpu, calculate_pike_matrix
 # -----------------------------
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--config', default='example_cvae.yaml', type=str)
-    p.add_argument('--train', action='store_true', default=False, help='Run training (default: only evaluation/visualization)')
+    p.add_argument('--config', default='experiments/example_cvae.yaml', type=str)
+    p.add_argument('--train', action='store_true', default=True, help='Run training (default: only evaluation/visualization)')
     p.add_argument('--pike', action='store_true', default=False, help='Calculate PIKE (default: False)')
     p.add_argument('--evaluation', action='store_true', default=False, help='Run evaluation')
     p.add_argument('--generation', action='store_true', default=False, help='Run generation after training/eval')
