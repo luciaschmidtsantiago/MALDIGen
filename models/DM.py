@@ -121,11 +121,14 @@ class ContextUnet1D(nn.Module):
             in_ch = out_ch
 
         # --- Output layer ---
+        # Use stride=1 (no downsampling) so final output length matches input `length`.
+        # Keep kernels small and use same-padding to preserve sequence length.
         self.out = nn.Sequential(
-            nn.Conv1d(2 * n_feat, n_feat, kernel_size=kernel_size, stride=stride, padding=padding),
+            nn.Conv1d(2 * n_feat, n_feat, kernel_size=3, stride=1, padding=1),
             nn.GroupNorm(norm_groups, n_feat),
             nn.ReLU(),
-            nn.Conv1d(n_feat, in_channels, kernel_size=kernel_size, stride=stride, padding=padding)
+            # Upsample by factor 2 to recover original input length (6000)
+            nn.ConvTranspose1d(n_feat, in_channels, kernel_size=kernel_size, stride=stride, padding=padding)
         )
 
     def forward(self, x, t, c=None):
